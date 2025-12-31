@@ -27,7 +27,7 @@ jobs:
       - name: Run PHPCS and generate JSON report
         run: |
           mkdir -p reports
-          vendor/bin/phpcs -q --report=json --standard=phpcs.xml . > reports/wcqa-report.json || true
+          vendor/bin/phpcs -q --report=json --standard=./phpcs.xml . > reports/wcqa-report.json || true
 
       - name: Commit report back to repo
         run: |
