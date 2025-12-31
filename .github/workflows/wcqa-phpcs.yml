@@ -22,18 +22,30 @@ jobs:
           php-version: "8.2"
 
       - name: Install Composer dependencies
-        run: composer install --no-interaction --prefer-dist
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      # 🔑 THIS IS THE MISSING STEP
+      - name: Register PHPCS standards
+        run: |
+          vendor/bin/phpcs --config-set installed_paths \
+            vendor/wp-coding-standards/wpcs,\
+            vendor/phpcsstandards/phpcsutils
+
+      - name: Verify PHPCS standards
+        run: vendor/bin/phpcs -i
 
       - name: Run PHPCS and generate JSON report
         run: |
           mkdir -p reports
-          vendor/bin/phpcs -q --report=json --standard=./phpcs.xml . > reports/wcqa-report.json || true
+          vendor/bin/phpcs \
+            --standard=./phpcs.xml \
+            --report=json \
+            . > reports/wcqa-report.json || true
 
       - name: Commit report back to repo
         run: |
           git config user.name "wcqa-bot"
           git config user.email "wcqa-bot@users.noreply.github.com"
           git add reports/wcqa-report.json
-          git commit -m "Update WCQA report" || echo "No changes to commit"
+          git commit -m "Update WCQA report" || echo "No changes"
           git push
-
