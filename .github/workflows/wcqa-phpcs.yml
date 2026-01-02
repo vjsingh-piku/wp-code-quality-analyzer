@@ -26,28 +26,17 @@ jobs:
 
       - name: Register PHPCS standards
         run: |
-         vendor/bin/phpcs --config-set installed_paths vendor/wp-coding-standards/wpcs,vendor/phpcsstandards/phpcsextra,vendor/phpcsstandards/phpcsutils
+          vendor/bin/phpcs --config-set installed_paths vendor/wp-coding-standards/wpcs,vendor/phpcsstandards/phpcsextra,vendor/phpcsstandards/phpcsutils
           vendor/bin/phpcs -i
-
-      # 🔑 THIS IS THE MISSING STEP
-      - name: Register PHPCS standards
-        run: |
-          vendor/bin/phpcs --config-set installed_paths \
-            vendor/wp-coding-standards/wpcs,\
-            vendor/phpcsstandards/phpcsutils
-
-      - name: Verify PHPCS standards
-        run: vendor/bin/phpcs -i
 
       - name: Run PHPCS and generate JSON report
         run: |
-         mkdir -p reports
-         vendor/bin/phpcs -q \
-         --standard=./phpcs.xml \
-         --report=json \
-         --report-file=reports/wcqa-report.json \
-         .
-
+          mkdir -p reports
+          vendor/bin/phpcs -q \
+            --standard=./phpcs.xml \
+            --report=json \
+            --report-file=reports/wcqa-report.json \
+            .
 
       - name: Commit report back to repo
         run: |
