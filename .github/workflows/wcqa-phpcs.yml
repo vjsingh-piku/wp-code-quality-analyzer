@@ -32,11 +32,7 @@ jobs:
       - name: Run PHPCS and generate JSON report
         run: |
           mkdir -p reports
-          vendor/bin/phpcs -q \
-            --standard=./phpcs.xml \
-            --report=json \
-            --report-file=reports/wcqa-report.json \
-            .
+          vendor/bin/phpcs -q --standard=./phpcs.xml --report=json --report-file=reports/wcqa-report.json .
 
       - name: Commit report back to repo
         run: |
@@ -45,3 +41,4 @@ jobs:
           git add reports/wcqa-report.json
           git commit -m "Update WCQA report" || echo "No changes"
           git push
+
