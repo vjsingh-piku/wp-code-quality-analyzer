@@ -2,7 +2,7 @@ name: WCQA - PHPCS Scan
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   workflow_dispatch:
 
 permissions:
@@ -20,11 +20,12 @@ jobs:
         uses: shivammathur/setup-php@v2
         with:
           php-version: "8.2"
+          tools: composer
 
       - name: Install Composer dependencies
         run: composer install --no-interaction --prefer-dist --no-progress
 
-      - name: Register PHPCS standards
+      - name: Verify PHPCS standards installed
         run: |
           vendor/bin/phpcs --config-set installed_paths vendor/wp-coding-standards/wpcs,vendor/phpcsstandards/phpcsextra,vendor/phpcsstandards/phpcsutils
           vendor/bin/phpcs -i
@@ -32,7 +33,7 @@ jobs:
       - name: Run PHPCS and generate JSON report
         run: |
           mkdir -p reports
-          vendor/bin/phpcs -q --standard=./phpcs.xml --report=json --report-file=reports/wcqa-report.json .
+          vendor/bin/phpcs -q --standard=phpcs.xml --report=json --report-file=reports/wcqa-report.json .
 
       - name: Commit report back to repo
         run: |
@@ -41,4 +42,3 @@ jobs:
           git add reports/wcqa-report.json
           git commit -m "Update WCQA report" || echo "No changes"
           git push
-
