@@ -1,34 +1,47 @@
 <?php
+declare(strict_types=1);
+
 /**
  * Plugin Name: WP Code Quality Analyzer
  * Description: Analyze WordPress code quality using PHPCS reports from GitHub Actions.
  * Version: 1.0.0
- * Author: Vijay Singh
+ * Author: Vijay Singh (Soluzione)
  * Text Domain: wcqa
- * Company Name: Soluzione
  */
 
 if (!defined('ABSPATH')) {
   exit;
 }
 
-// Simple autoloader (if not using Composer autoload)
-spl_autoload_register(function ($class) {
-  if (strpos($class, 'WCQA\\') !== 0) {
+/**
+ * Minimal PSR-4-ish autoloader for WCQA\* classes in /src
+ */
+spl_autoload_register(static function (string $class): void {
+  $prefix = 'WCQA\\';
+
+  if (strpos($class, $prefix) !== 0) {
     return;
   }
 
-  $path = plugin_dir_path(__FILE__) . 'src/' .
-          str_replace(['WCQA\\', '\\'], ['', '/'], $class) . '.php';
+  $relative = substr($class, strlen($prefix));
+  $relative = str_replace('\\', '/', $relative);
 
-  if (file_exists($path)) {
+  $path = plugin_dir_path(__FILE__) . 'src/' . $relative . '.php';
+
+  if (is_readable($path)) {
     require_once $path;
   }
 });
 
-// Register Admin Page
-add_action('plugins_loaded', function () {
-  if (is_admin()) {
+/**
+ * Boot admin UI
+ */
+add_action('plugins_loaded', static function (): void {
+  if (!is_admin()) {
+    return;
+  }
+
+  if (class_exists('\WCQA\AdminPage')) {
     $admin = new \WCQA\AdminPage();
     $admin->register();
   }
