@@ -25,7 +25,7 @@ jobs:
       - name: Install Composer dependencies
         run: composer install --no-interaction --prefer-dist --no-progress
 
-      - name: Verify PHPCS standards installed
+      - name: Configure PHPCS installed paths
         run: |
           vendor/bin/phpcs --config-set installed_paths vendor/wp-coding-standards/wpcs,vendor/phpcsstandards/phpcsextra,vendor/phpcsstandards/phpcsutils
           vendor/bin/phpcs -i
