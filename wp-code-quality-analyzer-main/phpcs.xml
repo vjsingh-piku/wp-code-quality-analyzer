@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<ruleset name="WP Code Quality Analyzer">
+  <description>PHPCS scan for plugin code</description>
+
+  <file>src</file>
+  <file>wp-code-quality-analyzer.php</file>
+
+  <exclude-pattern>*/vendor/*</exclude-pattern>
+
+  <rule ref="WordPress" />
+  <rule ref="WordPress-Core" />
+  <rule ref="WordPress-Extra" />
+
+  <arg name="extensions" value="php"/>
+</ruleset>
