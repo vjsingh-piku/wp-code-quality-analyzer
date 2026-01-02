@@ -5,18 +5,18 @@ namespace WCQA;
 
 class AdminPage {
   public const CAP = 'manage_options';
-  public const NONCE_RUN  = 'wcqa_run_scan';
-  public const NONCE_FETCH = 'wcqa_fetch_report';
+  public const NONCE_FETCH  = 'wcqa_fetch_report';
+  public const NONCE_DELETE = 'wcqa_delete_history';
+
+  private const HISTORY_OPTION = 'wcqa_report_history';
+  private const HISTORY_LIMIT  = 10;
 
   public function register(): void {
     add_action('admin_menu', [$this, 'menu']);
-
-    // Local scan (optional)
-    add_action('admin_post_wcqa_run_scan', [$this, 'handle_scan']);
-
-    // Settings + GitHub report fetch
     add_action('admin_init', [$this, 'register_settings']);
+
     add_action('admin_post_wcqa_fetch_report', [$this, 'handle_fetch_report']);
+    add_action('admin_post_wcqa_delete_history', [$this, 'handle_delete_history']);
   }
 
   public function menu(): void {
@@ -37,24 +37,13 @@ class AdminPage {
       'sanitize_callback' => 'esc_url_raw',
       'default'           => '',
     ]);
-
-    // Optional: for Private GitHub repos
-    register_setting('wcqa_settings', 'wcqa_github_token', [
-      'type'              => 'string',
-      'sanitize_callback' => [$this, 'sanitize_token'],
-      'default'           => '',
-    ]);
-  }
-
-  public function sanitize_token(string $value): string {
-    $value = trim($value);
-    // Remove accidental "Bearer " prefix if user pastes it.
-    $value = preg_replace('/^Bearer\s+/i', '', $value) ?? $value;
-    return $value;
   }
 
   /**
-   * Fetch report from GitHub Raw URL and store in options.
+   * Fetch report from GitHub Raw URL and store:
+   * - latest report
+   * - meta
+   * - history (last 10)
    */
   public function handle_fetch_report(): void {
     if (!current_user_can(self::CAP)) {
@@ -67,19 +56,11 @@ class AdminPage {
       wp_die('Report URL is not set. Save the Raw URL first.');
     }
 
-    $token = (string) get_option('wcqa_github_token', '');
-    $headers = [
-      'Accept' => 'application/json',
-    ];
-
-    // If repo is private, add token.
-    if (!empty($token)) {
-      $headers['Authorization'] = 'Bearer ' . $token;
-    }
-
     $res = wp_remote_get($url, [
       'timeout' => 25,
-      'headers' => $headers,
+      'headers' => [
+        'Accept' => 'application/json',
+      ],
     ]);
 
     if (is_wp_error($res)) {
@@ -90,10 +71,8 @@ class AdminPage {
     $body = (string) wp_remote_retrieve_body($res);
 
     if ($code !== 200) {
-      // GitHub private raw URL often returns 404 without token.
       wp_die(
         'Fetch failed. HTTP ' . esc_html((string) $code) .
-        '<br><br><strong>Tip:</strong> If your repo is private, add a GitHub Token in settings.' .
         '<br><br><strong>Response:</strong><br><pre>' . esc_html(substr($body, 0, 400)) . '</pre>'
       );
     }
@@ -103,12 +82,36 @@ class AdminPage {
       wp_die('Invalid JSON. Make sure you used the RAW URL of reports/wcqa-report.json.');
     }
 
-    update_option('wcqa_last_report', $json, false);
-    update_option('wcqa_last_meta', [
+    $summary = $this->wcqa_build_summary($json);
+    $score   = (int) $this->wcqa_calculate_score($summary);
+
+    $meta = [
       'fetched_at' => current_time('mysql'),
       'source'     => $url,
-    ], false);
+      'score'      => $score,
+      'errors'     => (int) ($summary['errors'] ?? 0),
+      'warnings'   => (int) ($summary['warnings'] ?? 0),
+      'files'      => (int) ($summary['files_with_issues'] ?? 0),
+    ];
 
+    // Save latest
+    update_option('wcqa_last_report', $json, false);
+    update_option('wcqa_last_meta', $meta, false);
+
+    // Push into history
+    $this->wcqa_push_history($meta, $json);
+
+    wp_safe_redirect(admin_url('admin.php?page=wcqa'));
+    exit;
+  }
+
+  public function handle_delete_history(): void {
+    if (!current_user_can(self::CAP)) {
+      wp_die('Not allowed.');
+    }
+    check_admin_referer(self::NONCE_DELETE);
+
+    delete_option(self::HISTORY_OPTION);
     wp_safe_redirect(admin_url('admin.php?page=wcqa'));
     exit;
   }
@@ -118,24 +121,17 @@ class AdminPage {
       return;
     }
 
-    // Local scan (optional legacy)
-    $themes  = function_exists('wp_get_themes') ? wp_get_themes() : [];
-    $plugins = function_exists('get_plugins') ? get_plugins() : [];
-    $last = null;
-    if (class_exists('\WCQA\ReportStore')) {
-      $last = \WCQA\ReportStore::get_last();
-    }
-
-    // GitHub report data
     $report_url = (string) get_option('wcqa_report_url', '');
-    $token      = (string) get_option('wcqa_github_token', '');
     $last_meta  = get_option('wcqa_last_meta', []);
     $report     = get_option('wcqa_last_report', []);
+    $history    = get_option(self::HISTORY_OPTION, []);
 
     if (!is_array($last_meta)) $last_meta = [];
     if (!is_array($report)) $report = [];
+    if (!is_array($history)) $history = [];
 
     $summary = $this->wcqa_build_summary($report);
+    $score   = isset($last_meta['score']) ? (int) $last_meta['score'] : (int) $this->wcqa_calculate_score($summary);
 
     ?>
     <div class="wrap">
@@ -145,7 +141,6 @@ class AdminPage {
 
       <form method="post" action="<?php echo esc_url(admin_url('options.php')); ?>">
         <?php settings_fields('wcqa_settings'); ?>
-
         <table class="form-table" role="presentation">
           <tr>
             <th scope="row">
@@ -157,34 +152,14 @@ class AdminPage {
                      name="wcqa_report_url"
                      value="<?php echo esc_attr($report_url); ?>"
                      class="regular-text"
-                     placeholder="https://raw.githubusercontent.com/.../reports/wcqa-report.json"
+                     placeholder="https://raw.githubusercontent.com/USER/REPO/main/reports/wcqa-report.json"
                      required>
               <p class="description">
                 Paste the RAW GitHub URL of <code>reports/wcqa-report.json</code>.
-                <br>Example: <code>https://raw.githubusercontent.com/USER/REPO/main/reports/wcqa-report.json</code>
-              </p>
-            </td>
-          </tr>
-
-          <tr>
-            <th scope="row">
-              <label for="wcqa_github_token">GitHub Token (optional)</label>
-            </th>
-            <td>
-              <input type="password"
-                     id="wcqa_github_token"
-                     name="wcqa_github_token"
-                     value="<?php echo esc_attr($token); ?>"
-                     class="regular-text"
-                     placeholder="Only needed for PRIVATE repos">
-              <p class="description">
-                If your repo is <strong>Private</strong>, create a GitHub token and paste here.
-                Required scope: <code>repo</code> (classic token) or a fine-grained token with read access to this repo.
               </p>
             </td>
           </tr>
         </table>
-
         <?php submit_button('Save Settings'); ?>
       </form>
 
@@ -201,143 +176,14 @@ class AdminPage {
       <hr>
 
       <?php
-        echo $this->wcqa_render_dashboard($summary, $report, $last_meta);
+        echo $this->wcqa_render_dashboard($summary, $score, $report, $last_meta);
       ?>
 
       <hr>
 
-      <h2>Run Local Scan (Optional)</h2>
-      <p class="description">
-        Note: Many shared hosting providers disable <code>exec()</code>. If local scan fails, use the GitHub report above.
-      </p>
-
-      <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
-        <input type="hidden" name="action" value="wcqa_run_scan">
-        <?php wp_nonce_field(self::NONCE_RUN); ?>
-
-        <table class="form-table" role="presentation">
-          <tr>
-            <th>Scan Type</th>
-            <td>
-              <select name="scan_type">
-                <option value="theme">Theme</option>
-                <option value="plugin">Plugin</option>
-              </select>
-            </td>
-          </tr>
-
-          <tr>
-            <th>Theme</th>
-            <td>
-              <select name="theme_slug">
-                <?php foreach ($themes as $slug => $theme): ?>
-                  <option value="<?php echo esc_attr((string) $slug); ?>">
-                    <?php echo esc_html((string) $theme->get('Name')); ?>
-                  </option>
-                <?php endforeach; ?>
-              </select>
-            </td>
-          </tr>
-
-          <tr>
-            <th>Plugin</th>
-            <td>
-              <select name="plugin_file">
-                <?php foreach ($plugins as $file => $data): ?>
-                  <option value="<?php echo esc_attr((string) $file); ?>">
-                    <?php echo esc_html((string) ($data['Name'] ?? $file)); ?>
-                  </option>
-                <?php endforeach; ?>
-              </select>
-            </td>
-          </tr>
-
-          <tr>
-            <th>Standard</th>
-            <td>
-              <select name="standard">
-                <option value="WordPress">WordPress</option>
-                <option value="WordPress-Core">WordPress-Core</option>
-                <option value="WordPress-Extra">WordPress-Extra</option>
-                <option value="WordPress-Docs">WordPress-Docs</option>
-              </select>
-            </td>
-          </tr>
-
-          <tr>
-            <th>Report</th>
-            <td>
-              <select name="report">
-                <option value="summary">Summary</option>
-                <option value="full">Full</option>
-                <option value="json">JSON</option>
-              </select>
-            </td>
-          </tr>
-        </table>
-
-        <?php submit_button('Run Scan'); ?>
-      </form>
-
-      <hr>
-
-      <h2>Last Local Scan Result</h2>
-      <?php if (!empty($last) && is_array($last)): ?>
-        <p><strong>Date:</strong> <?php echo esc_html((string) ($last['created_at'] ?? '')); ?></p>
-        <p><strong>Target:</strong> <?php echo esc_html((string) ($last['target'] ?? '')); ?></p>
-        <p><strong>Exit Code:</strong> <?php echo esc_html((string) ($last['exit_code'] ?? '')); ?></p>
-        <textarea class="large-text code" rows="18" readonly><?php echo esc_textarea((string) ($last['output'] ?? '')); ?></textarea>
-      <?php else: ?>
-        <p>No local scan run yet.</p>
-      <?php endif; ?>
+      <?php echo $this->wcqa_render_history($history); ?>
     </div>
     <?php
-  }
-
-  /**
-   * LOCAL scan handler (optional). Will fail on shared hosting if exec is disabled.
-   */
-  public function handle_scan(): void {
-    if (!current_user_can(self::CAP)) {
-      wp_die('Not allowed.');
-    }
-    check_admin_referer(self::NONCE_RUN);
-
-    $scan_type = sanitize_text_field($_POST['scan_type'] ?? 'theme');
-    $standard  = sanitize_text_field($_POST['standard'] ?? 'WordPress');
-    $report    = sanitize_text_field($_POST['report'] ?? 'summary');
-
-    if ($scan_type === 'plugin') {
-      $plugin_file = sanitize_text_field($_POST['plugin_file'] ?? '');
-      $target = WP_PLUGIN_DIR . '/' . dirname($plugin_file);
-    } else {
-      $theme_slug = sanitize_text_field($_POST['theme_slug'] ?? '');
-      $target = WP_CONTENT_DIR . '/themes/' . $theme_slug;
-    }
-
-    try {
-      if (!class_exists('\WCQA\Scanner')) {
-        throw new \RuntimeException('Scanner class not found.');
-      }
-      $scanner = new \WCQA\Scanner();
-      $result  = $scanner->run($target, $standard, $report);
-
-      if (class_exists('\WCQA\ReportStore')) {
-        \WCQA\ReportStore::save_last($result);
-      }
-    } catch (\Throwable $e) {
-      if (class_exists('\WCQA\ReportStore')) {
-        \WCQA\ReportStore::save_last([
-          'created_at' => current_time('mysql'),
-          'target' => 'ERROR',
-          'exit_code' => 1,
-          'output' => $e->getMessage(),
-        ]);
-      }
-    }
-
-    wp_safe_redirect(admin_url('admin.php?page=wcqa'));
-    exit;
   }
 
   /**
@@ -349,9 +195,7 @@ class AdminPage {
     $filesWithIssues = 0;
 
     $files = $report['files'] ?? [];
-    if (!is_array($files)) {
-      $files = [];
-    }
+    if (!is_array($files)) $files = [];
 
     foreach ($files as $filePath => $fileData) {
       if (!is_array($fileData)) continue;
@@ -376,9 +220,53 @@ class AdminPage {
   }
 
   /**
-   * Render professional dashboard UI (Option 2).
+   * Simple scoring model (0–100):
+   * - Start 100
+   * - Each ERROR: -3
+   * - Each WARNING: -1
+   * - Clamp 0..100
    */
-  private function wcqa_render_dashboard(array $summary, array $report, array $meta): string {
+  private function wcqa_calculate_score(array $summary): int {
+    $errors   = (int) ($summary['errors'] ?? 0);
+    $warnings = (int) ($summary['warnings'] ?? 0);
+
+    $score = 100 - ($errors * 3) - ($warnings * 1);
+    if ($score < 0) $score = 0;
+    if ($score > 100) $score = 100;
+
+    return $score;
+  }
+
+  /**
+   * Store history items:
+   * Each item:
+   * - id, fetched_at, score, errors, warnings, files, source, report
+   */
+  private function wcqa_push_history(array $meta, array $report): void {
+    $history = get_option(self::HISTORY_OPTION, []);
+    if (!is_array($history)) $history = [];
+
+    $item = [
+      'id'        => wp_generate_uuid4(),
+      'fetched_at'=> (string) ($meta['fetched_at'] ?? current_time('mysql')),
+      'score'     => (int) ($meta['score'] ?? 0),
+      'errors'    => (int) ($meta['errors'] ?? 0),
+      'warnings'  => (int) ($meta['warnings'] ?? 0),
+      'files'     => (int) ($meta['files'] ?? 0),
+      'source'    => (string) ($meta['source'] ?? ''),
+      'report'    => $report, // store full report for “View”
+    ];
+
+    array_unshift($history, $item);
+    $history = array_slice($history, 0, self::HISTORY_LIMIT);
+
+    update_option(self::HISTORY_OPTION, $history, false);
+  }
+
+  /**
+   * Dashboard UI with Quality Score.
+   */
+  private function wcqa_render_dashboard(array $summary, int $score, array $report, array $meta): string {
     $errors   = (int)($summary['errors'] ?? 0);
     $warnings = (int)($summary['warnings'] ?? 0);
     $filesWithIssues = (int)($summary['files_with_issues'] ?? 0);
@@ -405,6 +293,10 @@ class AdminPage {
       <h2>Latest Scan Summary</h2>
 
       <div class="wcqa-cards">
+        <div class="wcqa-card">
+          <div class="label">Quality Score</div>
+          <div class="value"><?php echo esc_html((string)$score); ?>/100</div>
+        </div>
         <div class="wcqa-card">
           <div class="label">Errors</div>
           <div class="value"><?php echo esc_html((string)$errors); ?></div>
@@ -486,6 +378,74 @@ class AdminPage {
 
       if (!$any): ?>
         <p>No issues found in the current report (or no report fetched yet). Click <strong>Fetch Latest Report</strong>.</p>
+      <?php endif; ?>
+
+    <?php
+    return (string) ob_get_clean();
+  }
+
+  /**
+   * Render scan history list (last 10).
+   */
+  private function wcqa_render_history(array $history): string {
+    ob_start(); ?>
+      <h2>Scan History (Last <?php echo esc_html((string) self::HISTORY_LIMIT); ?>)</h2>
+
+      <?php if (empty($history)): ?>
+        <p>No history yet. Click <strong>Fetch Latest Report</strong> to save entries.</p>
+      <?php else: ?>
+        <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin-bottom:10px;">
+          <input type="hidden" name="action" value="wcqa_delete_history">
+          <?php wp_nonce_field(self::NONCE_DELETE); ?>
+          <?php submit_button('Delete History', 'delete', 'submit', false); ?>
+        </form>
+
+        <table class="widefat striped">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Score</th>
+              <th>Errors</th>
+              <th>Warnings</th>
+              <th>Files</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody>
+          <?php foreach ($history as $item):
+            if (!is_array($item)) continue;
+
+            $date = (string) ($item['fetched_at'] ?? '');
+            $score = (int) ($item['score'] ?? 0);
+            $errors = (int) ($item['errors'] ?? 0);
+            $warnings = (int) ($item['warnings'] ?? 0);
+            $files = (int) ($item['files'] ?? 0);
+
+            $report = $item['report'] ?? [];
+            if (!is_array($report)) $report = [];
+
+            $summary = $this->wcqa_build_summary($report);
+            $meta = [
+              'fetched_at' => $date,
+              'source' => (string) ($item['source'] ?? ''),
+            ];
+            ?>
+            <tr>
+              <td><?php echo esc_html($date); ?></td>
+              <td><strong><?php echo esc_html((string)$score); ?></strong>/100</td>
+              <td><?php echo esc_html((string)$errors); ?></td>
+              <td><?php echo esc_html((string)$warnings); ?></td>
+              <td><?php echo esc_html((string)$files); ?></td>
+              <td>
+                <details>
+                  <summary>View</summary>
+                  <?php echo $this->wcqa_render_dashboard($summary, $score, $report, $meta); ?>
+                </details>
+              </td>
+            </tr>
+          <?php endforeach; ?>
+          </tbody>
+        </table>
       <?php endif; ?>
 
     <?php
