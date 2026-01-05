@@ -1,0 +1,44 @@
+name: WCQA - PHPCS Scan
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  phpcs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.2"
+          tools: composer
+
+      - name: Install Composer dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Configure PHPCS installed paths
+        run: |
+          vendor/bin/phpcs --config-set installed_paths vendor/wp-coding-standards/wpcs,vendor/phpcsstandards/phpcsextra,vendor/phpcsstandards/phpcsutils
+          vendor/bin/phpcs -i
+
+      - name: Run PHPCS and generate JSON report
+        run: |
+          mkdir -p reports
+          vendor/bin/phpcs -q --standard=phpcs.xml --report=json --report-file=reports/wcqa-report.json . || true
+
+      - name: Commit report back to repo
+        run: |
+          git config user.name "wcqa-bot"
+          git config user.email "wcqa-bot@users.noreply.github.com"
+          git add reports/wcqa-report.json
+          git commit -m "Update WCQA report" || echo "No changes"
+          git push
