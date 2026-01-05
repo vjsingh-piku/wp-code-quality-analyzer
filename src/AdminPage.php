@@ -1,535 +1,570 @@
 <?php
-/**
- * Admin page for WP Code Quality Analyzer.
- *
- * @package WCQA
- */
-
 declare(strict_types=1);
 
 namespace WCQA;
 
-class AdminPage {
+final class AdminPage {
 
 	public const CAP          = 'manage_options';
+	public const NONCE_SAVE   = 'wcqa_save_sources';
 	public const NONCE_FETCH  = 'wcqa_fetch_report';
-	public const OPT_URL      = 'wcqa_report_url';
-	public const OPT_TOKEN    = 'wcqa_github_token';
-	public const OPT_LAST     = 'wcqa_last_report';
-	public const OPT_META     = 'wcqa_last_meta';
-	public const OPT_HISTORY  = 'wcqa_scan_history';
-	public const HISTORY_MAX  = 10;
+	public const OPT_SOURCES  = 'wcqa_sources';        // array of repo sources
+	public const OPT_HISTORY  = 'wcqa_report_history'; // array keyed by source id
 
-	/**
-	 * Register hooks.
-	 *
-	 * @return void
-	 */
 	public function register(): void {
-		add_action( 'admin_menu', array( $this, 'menu' ) );
-		add_action( 'admin_init', array( $this, 'register_settings' ) );
-		add_action( 'admin_post_wcqa_fetch_report', array( $this, 'handle_fetch_report' ) );
+		add_action('admin_menu', array($this, 'menu'));
+		add_action('admin_init', array($this, 'register_settings'));
+
+		add_action('admin_post_wcqa_save_sources', array($this, 'handle_save_sources'));
+		add_action('admin_post_wcqa_fetch_report', array($this, 'handle_fetch_report'));
 	}
 
-	/**
-	 * Add admin menu.
-	 *
-	 * @return void
-	 */
 	public function menu(): void {
 		add_menu_page(
 			'Code Quality Analyzer',
 			'Code Quality',
 			self::CAP,
 			'wcqa',
-			array( $this, 'render' ),
+			array($this, 'render'),
 			'dashicons-search',
 			80
 		);
 	}
 
-	/**
-	 * Register settings.
-	 *
-	 * @return void
-	 */
 	public function register_settings(): void {
-		register_setting(
-			'wcqa_settings',
-			self::OPT_URL,
-			array(
-				'type'              => 'string',
-				'sanitize_callback' => 'esc_url_raw',
-				'default'           => '',
-			)
-		);
+		// Stored as array:
+		// [
+		//   ['id'=>'abc123','name'=>'Theme - MyTheme','url'=>'https://raw.../reports/wcqa-report.json','token'=>''],
+		//   ...
+		// ]
+		register_setting('wcqa_settings', self::OPT_SOURCES, array(
+			'type'              => 'array',
+			'sanitize_callback' => array($this, 'sanitize_sources'),
+			'default'           => array(),
+		));
 
-		register_setting(
-			'wcqa_settings',
-			self::OPT_TOKEN,
-			array(
-				'type'              => 'string',
-				'sanitize_callback' => array( $this, 'sanitize_token' ),
-				'default'           => '',
-			)
-		);
+		// History stored as array keyed by source id:
+		// ['abc123' => [ ['fetched_at'=>'...','score'=>..,'summary'=>..,'report'=>..], ... ], ...]
+		register_setting('wcqa_settings', self::OPT_HISTORY, array(
+			'type'              => 'array',
+			'sanitize_callback' => array($this, 'sanitize_history'),
+			'default'           => array(),
+		));
 	}
 
-	/**
-	 * Sanitize GitHub token.
-	 *
-	 * @param string $value Token.
-	 * @return string
-	 */
-	public function sanitize_token( string $value ): string {
-		$value = trim( $value );
-		$value = (string) preg_replace( '/^Bearer\s+/i', '', $value );
+	/** Sanitize sources array. */
+	public function sanitize_sources($value): array {
+		$value = is_array($value) ? $value : array();
+		$out   = array();
+
+		foreach ($value as $row) {
+			if (!is_array($row)) {
+				continue;
+			}
+
+			$id    = isset($row['id']) ? sanitize_key((string) $row['id']) : '';
+			$name  = isset($row['name']) ? sanitize_text_field((string) $row['name']) : '';
+			$url   = isset($row['url']) ? esc_url_raw((string) $row['url']) : '';
+			$token = isset($row['token']) ? $this->sanitize_token((string) $row['token']) : '';
+
+			if (empty($id)) {
+				$id = $this->new_id();
+			}
+
+			// Require name + url to keep.
+			if (empty($name) || empty($url)) {
+				continue;
+			}
+
+			$out[] = array(
+				'id'    => $id,
+				'name'  => $name,
+				'url'   => $url,
+				'token' => $token, // optional (private repo raw access)
+			);
+		}
+
+		return $out;
+	}
+
+	public function sanitize_history($value): array {
+		// Keep as-is but ensure array.
+		return is_array($value) ? $value : array();
+	}
+
+	private function sanitize_token(string $value): string {
+		$value = trim($value);
+		$value = (string) preg_replace('/^Bearer\s+/i', '', $value);
 		return $value;
 	}
 
-	/**
-	 * Fetch report from GitHub RAW URL.
-	 *
-	 * @return void
-	 */
-	public function handle_fetch_report(): void {
-		if ( ! current_user_can( self::CAP ) ) {
-			wp_die( 'Not allowed.' );
+	private function new_id(): string {
+		// short random-ish id
+		return substr(wp_hash((string) microtime(true) . wp_rand()), 0, 10);
+	}
+
+	/** Save sources from admin form. */
+	public function handle_save_sources(): void {
+		if (!current_user_can(self::CAP)) {
+			wp_die('Not allowed.');
 		}
+		check_admin_referer(self::NONCE_SAVE);
 
-		check_admin_referer( self::NONCE_FETCH );
+		// We save through options.php normally, but this handler allows
+		// "Add row" / delete behavior via POST.
+		$sources = isset($_POST[self::OPT_SOURCES]) ? (array) $_POST[self::OPT_SOURCES] : array();
+		update_option(self::OPT_SOURCES, $this->sanitize_sources($sources), false);
 
-		$url = (string) get_option( self::OPT_URL, '' );
-		if ( empty( $url ) ) {
-			wp_die( 'Report URL is not set. Save the RAW URL first.' );
-		}
-
-		$token   = (string) get_option( self::OPT_TOKEN, '' );
-		$headers = array(
-			'Accept' => 'application/json',
-		);
-
-		if ( ! empty( $token ) ) {
-			$headers['Authorization'] = 'Bearer ' . $token;
-		}
-
-		$res = wp_remote_get(
-			$url,
-			array(
-				'timeout' => 25,
-				'headers' => $headers,
-			)
-		);
-
-		if ( is_wp_error( $res ) ) {
-			wp_die( 'Fetch failed: ' . esc_html( $res->get_error_message() ) );
-		}
-
-		$code = (int) wp_remote_retrieve_response_code( $res );
-		$body = (string) wp_remote_retrieve_body( $res );
-
-		if ( 200 !== $code ) {
-			wp_die(
-				'Fetch failed. HTTP ' . esc_html( (string) $code ) .
-				'<br><br><strong>Response:</strong><br><pre>' . esc_html( substr( $body, 0, 400 ) ) . '</pre>'
-			);
-		}
-
-		$json = json_decode( $body, true );
-
-		// If the RAW file contains plain text (like PHPCS error output), JSON decode fails.
-		if ( ! is_array( $json ) || empty( $json['files'] ) || ! is_array( $json['files'] ) ) {
-			wp_die(
-				'Invalid PHPCS JSON report. Make sure your workflow writes a JSON report using:' .
-				'<br><code>--report=json --report-file=reports/wcqa-report.json</code><br><br>' .
-				'Tip: Open the RAW URL in browser. It must start with <code>{</code> and contain <code>"files"</code>.'
-			);
-		}
-
-		$meta = array(
-			'fetched_at' => current_time( 'mysql' ),
-			'source'     => $url,
-		);
-
-		update_option( self::OPT_LAST, $json, false );
-		update_option( self::OPT_META, $meta, false );
-
-		$summary = $this->build_summary( $json );
-		$this->append_history( $summary, $meta );
-
-		wp_safe_redirect( admin_url( 'admin.php?page=wcqa' ) );
+		wp_safe_redirect(admin_url('admin.php?page=wcqa'));
 		exit;
 	}
 
-	/**
-	 * Render admin page.
-	 *
-	 * @return void
-	 */
+	/** Fetch report for a specific source id and push into history. */
+	public function handle_fetch_report(): void {
+		if (!current_user_can(self::CAP)) {
+			wp_die('Not allowed.');
+		}
+		check_admin_referer(self::NONCE_FETCH);
+
+		$source_id = isset($_POST['source_id']) ? sanitize_key((string) $_POST['source_id']) : '';
+		if (empty($source_id)) {
+			wp_die('Missing source.');
+		}
+
+		$sources = get_option(self::OPT_SOURCES, array());
+		$sources = is_array($sources) ? $sources : array();
+
+		$source = null;
+		foreach ($sources as $s) {
+			if (is_array($s) && isset($s['id']) && (string) $s['id'] === $source_id) {
+				$source = $s;
+				break;
+			}
+		}
+
+		if (!$source || empty($source['url'])) {
+			wp_die('Source not found.');
+		}
+
+		$url   = (string) $source['url'];
+		$token = isset($source['token']) ? (string) $source['token'] : '';
+
+		$headers = array('Accept' => 'application/json');
+		if (!empty($token)) {
+			$headers['Authorization'] = 'Bearer ' . $token;
+		}
+
+		$res = wp_remote_get($url, array(
+			'timeout' => 25,
+			'headers' => $headers,
+		));
+
+		if (is_wp_error($res)) {
+			wp_die('Fetch failed: ' . esc_html($res->get_error_message()));
+		}
+
+		$code = (int) wp_remote_retrieve_response_code($res);
+		$body = (string) wp_remote_retrieve_body($res);
+
+		if ($code !== 200) {
+			wp_die(
+				'Fetch failed. HTTP ' . esc_html((string) $code) .
+				'<br><br><strong>Tip:</strong> If your repo is private, add a GitHub token for this source.' .
+				'<br><br><strong>Response:</strong><br><pre>' . esc_html(substr($body, 0, 400)) . '</pre>'
+			);
+		}
+
+		$json = json_decode($body, true);
+		if (!is_array($json)) {
+			wp_die('Invalid JSON. Make sure you used the RAW URL of reports/wcqa-report.json.');
+		}
+
+		$summary = $this->build_summary($json);
+		$score   = $this->compute_quality_score($summary);
+
+		$history = get_option(self::OPT_HISTORY, array());
+		$history = is_array($history) ? $history : array();
+
+		if (!isset($history[$source_id]) || !is_array($history[$source_id])) {
+			$history[$source_id] = array();
+		}
+
+		array_unshift($history[$source_id], array(
+			'fetched_at' => current_time('mysql'),
+			'source'     => $url,
+			'score'      => $score,
+			'summary'    => $summary,
+			'report'     => $json,
+		));
+
+		// Keep last 10 scans per source
+		$history[$source_id] = array_slice($history[$source_id], 0, 10);
+
+		update_option(self::OPT_HISTORY, $history, false);
+
+		wp_safe_redirect(admin_url('admin.php?page=wcqa'));
+		exit;
+	}
+
 	public function render(): void {
-		if ( ! current_user_can( self::CAP ) ) {
+		if (!current_user_can(self::CAP)) {
 			return;
 		}
 
-		$report_url = (string) get_option( self::OPT_URL, '' );
-		$token      = (string) get_option( self::OPT_TOKEN, '' );
-		$meta       = get_option( self::OPT_META, array() );
-		$report     = get_option( self::OPT_LAST, array() );
-		$history    = get_option( self::OPT_HISTORY, array() );
+		$sources = get_option(self::OPT_SOURCES, array());
+		$sources = is_array($sources) ? $sources : array();
 
-		if ( ! is_array( $meta ) ) {
-			$meta = array();
+		$history = get_option(self::OPT_HISTORY, array());
+		$history = is_array($history) ? $history : array();
+
+		// Overall aggregation (latest entry per source)
+		$overall = array('errors' => 0, 'warnings' => 0, 'files_with_issues' => 0);
+		$overallScoreParts = array();
+		$latestBySource = array();
+
+		foreach ($sources as $s) {
+			if (!is_array($s) || empty($s['id'])) {
+				continue;
+			}
+			$sid = (string) $s['id'];
+
+			$latest = isset($history[$sid][0]) && is_array($history[$sid][0]) ? $history[$sid][0] : null;
+			if (!$latest) {
+				continue;
+			}
+
+			$sum = isset($latest['summary']) && is_array($latest['summary']) ? $latest['summary'] : array();
+			$overall['errors']           += (int) ($sum['errors'] ?? 0);
+			$overall['warnings']         += (int) ($sum['warnings'] ?? 0);
+			$overall['files_with_issues'] += (int) ($sum['files_with_issues'] ?? 0);
+
+			$overallScoreParts[] = (int) ($latest['score'] ?? 0);
+			$latestBySource[$sid] = $latest;
 		}
 
-		if ( ! is_array( $report ) ) {
-			$report = array();
-		}
+		$overallScore = !empty($overallScoreParts)
+			? (int) round(array_sum($overallScoreParts) / count($overallScoreParts))
+			: 0;
 
-		if ( ! is_array( $history ) ) {
-			$history = array();
-		}
-
-		$summary = $this->build_summary( $report );
 		?>
 		<div class="wrap">
 			<h1>WP Code Quality Analyzer</h1>
 
-			<h2>Report Source (GitHub Actions)</h2>
+			<?php echo $this->render_overall_dashboard($overallScore, $overall); ?>
 
-			<form method="post" action="<?php echo esc_url( admin_url( 'options.php' ) ); ?>">
-				<?php settings_fields( 'wcqa_settings' ); ?>
+			<hr>
 
-				<table class="form-table" role="presentation">
-					<tr>
-						<th scope="row">
-							<label for="<?php echo esc_attr( self::OPT_URL ); ?>">PHPCS Report RAW URL</label>
-						</th>
-						<td>
-							<input
-								type="url"
-								id="<?php echo esc_attr( self::OPT_URL ); ?>"
-								name="<?php echo esc_attr( self::OPT_URL ); ?>"
-								value="<?php echo esc_attr( $report_url ); ?>"
-								class="regular-text"
-								placeholder="https://raw.githubusercontent.com/USER/REPO/main/reports/wcqa-report.json"
-								required
-							/>
-							<p class="description">Paste RAW URL of <code>reports/wcqa-report.json</code>.</p>
-						</td>
-					</tr>
+			<h2>Repo Sources (Themes / Plugins)</h2>
+			<p class="description">
+				Add one entry per repo. Each repo should generate <code>reports/wcqa-report.json</code> via GitHub Actions.
+			</p>
 
-					<tr>
-						<th scope="row">
-							<label for="<?php echo esc_attr( self::OPT_TOKEN ); ?>">GitHub Token (optional)</label>
-						</th>
-						<td>
-							<input
-								type="password"
-								id="<?php echo esc_attr( self::OPT_TOKEN ); ?>"
-								name="<?php echo esc_attr( self::OPT_TOKEN ); ?>"
-								value="<?php echo esc_attr( $token ); ?>"
-								class="regular-text"
-								placeholder="Only for private repos"
-							/>
-						</td>
-					</tr>
+			<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+				<input type="hidden" name="action" value="wcqa_save_sources">
+				<?php wp_nonce_field(self::NONCE_SAVE); ?>
+
+				<table class="widefat striped" style="margin-top:12px;">
+					<thead>
+						<tr>
+							<th style="width:18%;">Name</th>
+							<th>RAW JSON URL</th>
+							<th style="width:18%;">Token (optional)</th>
+							<th style="width:12%;">Actions</th>
+						</tr>
+					</thead>
+					<tbody>
+						<?php if (empty($sources)) : ?>
+							<tr>
+								<td colspan="4">No sources added yet.</td>
+							</tr>
+						<?php endif; ?>
+
+						<?php foreach ($sources as $i => $row) :
+							$id    = isset($row['id']) ? (string) $row['id'] : $this->new_id();
+							$name  = isset($row['name']) ? (string) $row['name'] : '';
+							$url   = isset($row['url']) ? (string) $row['url'] : '';
+							$token = isset($row['token']) ? (string) $row['token'] : '';
+							?>
+							<tr>
+								<td>
+									<input type="hidden" name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $i); ?>][id]" value="<?php echo esc_attr($id); ?>">
+									<input type="text" class="regular-text"
+										name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $i); ?>][name]"
+										value="<?php echo esc_attr($name); ?>"
+										placeholder="e.g. Theme - Soluzione Child">
+								</td>
+								<td>
+									<input type="url" class="large-text"
+										name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $i); ?>][url]"
+										value="<?php echo esc_attr($url); ?>"
+										placeholder="https://raw.githubusercontent.com/USER/REPO/main/reports/wcqa-report.json">
+								</td>
+								<td>
+									<input type="password" class="regular-text"
+										name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $i); ?>][token]"
+										value="<?php echo esc_attr($token); ?>"
+										placeholder="Only for private repos">
+								</td>
+								<td>
+									<span class="description">Save to apply</span>
+								</td>
+							</tr>
+						<?php endforeach; ?>
+
+						<?php
+						// Blank row for adding new source (simple UX)
+						$newIndex = count($sources);
+						?>
+						<tr>
+							<td>
+								<input type="hidden" name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $newIndex); ?>][id]" value="">
+								<input type="text" class="regular-text"
+									name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $newIndex); ?>][name]"
+									value=""
+									placeholder="Add new repo name">
+							</td>
+							<td>
+								<input type="url" class="large-text"
+									name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $newIndex); ?>][url]"
+									value=""
+									placeholder="Add new RAW JSON URL">
+							</td>
+							<td>
+								<input type="password" class="regular-text"
+									name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $newIndex); ?>][token]"
+									value=""
+									placeholder="Optional token">
+							</td>
+							<td><span class="description">Add & Save</span></td>
+						</tr>
+					</tbody>
 				</table>
 
-				<?php submit_button( 'Save Settings' ); ?>
+				<?php submit_button('Save Sources'); ?>
 			</form>
 
-			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
-				<input type="hidden" name="action" value="wcqa_fetch_report" />
-				<?php wp_nonce_field( self::NONCE_FETCH ); ?>
-				<?php submit_button( 'Fetch Latest Report', 'primary' ); ?>
-			</form>
+			<hr>
 
-			<?php echo $this->render_dashboard( $summary, $report, $meta ); ?>
-			<?php echo $this->render_history( $history ); ?>
+			<h2>Fetch Latest Reports</h2>
+			<p class="description">Fetch each repo report (stores history).</p>
+
+			<?php if (empty($sources)) : ?>
+				<p>Add at least one repo source first.</p>
+			<?php else : ?>
+				<div style="display:flex; gap:12px; flex-wrap:wrap; margin-top:10px;">
+					<?php foreach ($sources as $s) :
+						if (!is_array($s) || empty($s['id'])) continue;
+						$sid  = (string) $s['id'];
+						$name = (string) ($s['name'] ?? $sid);
+						?>
+						<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin:0;">
+							<input type="hidden" name="action" value="wcqa_fetch_report">
+							<input type="hidden" name="source_id" value="<?php echo esc_attr($sid); ?>">
+							<?php wp_nonce_field(self::NONCE_FETCH); ?>
+							<?php submit_button('Fetch: ' . $name, 'secondary', 'submit', false); ?>
+						</form>
+					<?php endforeach; ?>
+				</div>
+			<?php endif; ?>
+
+			<hr>
+
+			<h2>Latest Summary (Per Repo)</h2>
+			<?php echo $this->render_repo_cards($sources, $latestBySource); ?>
+
+			<hr>
+
+			<h2>Scan History (Last 10 per Repo)</h2>
+			<?php echo $this->render_history($sources, $history); ?>
+
 		</div>
 		<?php
 	}
 
-	/**
-	 * Build summary from PHPCS JSON report.
-	 *
-	 * @param array $report Report array.
-	 * @return array
-	 */
-	private function build_summary( array $report ): array {
-		$total_errors   = 0;
-		$total_warnings = 0;
-		$files_issues   = 0;
+	/** Build summary from PHPCS JSON report. */
+	private function build_summary(array $report): array {
+		$totalErrors     = 0;
+		$totalWarnings   = 0;
+		$filesWithIssues = 0;
 
-		$files = isset( $report['files'] ) && is_array( $report['files'] ) ? $report['files'] : array();
+		$files = isset($report['files']) && is_array($report['files']) ? $report['files'] : array();
 
-		foreach ( $files as $file_data ) {
-			if ( ! is_array( $file_data ) || empty( $file_data['messages'] ) || ! is_array( $file_data['messages'] ) ) {
-				continue;
-			}
+		foreach ($files as $fileData) {
+			if (!is_array($fileData)) continue;
 
-			$files_issues++;
+			$messages = isset($fileData['messages']) && is_array($fileData['messages']) ? $fileData['messages'] : array();
+			if (empty($messages)) continue;
 
-			foreach ( $file_data['messages'] as $m ) {
-				if ( ! is_array( $m ) ) {
-					continue;
-				}
+			$filesWithIssues++;
 
-				$type = strtoupper( (string) ( $m['type'] ?? '' ) );
-
-				if ( 'ERROR' === $type ) {
-					$total_errors++;
-				}
-
-				if ( 'WARNING' === $type ) {
-					$total_warnings++;
+			foreach ($messages as $m) {
+				if (!is_array($m)) continue;
+				$type = strtoupper((string) ($m['type'] ?? ''));
+				if ($type === 'ERROR') {
+					$totalErrors++;
+				} elseif ($type === 'WARNING') {
+					$totalWarnings++;
 				}
 			}
 		}
 
-		$score = $this->compute_score( $total_errors, $total_warnings, $files_issues );
-
 		return array(
-			'errors'           => $total_errors,
-			'warnings'         => $total_warnings,
-			'files_with_issues'=> $files_issues,
-			'score'            => $score,
+			'errors'           => $totalErrors,
+			'warnings'         => $totalWarnings,
+			'files_with_issues' => $filesWithIssues,
 		);
 	}
 
 	/**
-	 * Compute Quality Score (0-100).
-	 *
-	 * @param int $errors Errors.
-	 * @param int $warnings Warnings.
-	 * @param int $files Files with issues.
-	 * @return int
+	 * Quality Score heuristic (0-100).
+	 * You can tune weights later. This is simple & stable.
 	 */
-	private function compute_score( int $errors, int $warnings, int $files ): int {
-		// Weighted penalty: errors hit harder than warnings; more files = small extra penalty.
-		$penalty = ( $errors * 0.05 ) + ( $warnings * 0.02 ) + ( $files * 0.5 );
+	private function compute_quality_score(array $summary): int {
+		$errors   = (int) ($summary['errors'] ?? 0);
+		$warnings = (int) ($summary['warnings'] ?? 0);
 
-		$score = (int) round( 100 - min( 100, $penalty ) );
+		// Weighted penalty.
+		$penalty = ($errors * 4) + ($warnings * 1);
 
-		if ( $score < 0 ) {
-			return 0;
-		}
-
-		if ( $score > 100 ) {
-			return 100;
-		}
+		// Map penalty to score. Clamp to 0..100.
+		$score = 100 - (int) min(100, round($penalty / 5));
+		if ($score < 0) $score = 0;
+		if ($score > 100) $score = 100;
 
 		return $score;
 	}
 
-	/**
-	 * Store last 10 summaries as history.
-	 *
-	 * @param array $summary Summary.
-	 * @param array $meta Meta.
-	 * @return void
-	 */
-	private function append_history( array $summary, array $meta ): void {
-		$history = get_option( self::OPT_HISTORY, array() );
-
-		if ( ! is_array( $history ) ) {
-			$history = array();
-		}
-
-		array_unshift(
-			$history,
-			array(
-				'fetched_at' => (string) ( $meta['fetched_at'] ?? '' ),
-				'source'     => (string) ( $meta['source'] ?? '' ),
-				'score'      => (int) ( $summary['score'] ?? 0 ),
-				'errors'     => (int) ( $summary['errors'] ?? 0 ),
-				'warnings'   => (int) ( $summary['warnings'] ?? 0 ),
-				'files'      => (int) ( $summary['files_with_issues'] ?? 0 ),
-			)
-		);
-
-		$history = array_slice( $history, 0, self::HISTORY_MAX );
-
-		update_option( self::OPT_HISTORY, $history, false );
-	}
-
-	/**
-	 * Render dashboard UI.
-	 *
-	 * @param array $summary Summary.
-	 * @param array $report Report.
-	 * @param array $meta Meta.
-	 * @return string
-	 */
-	private function render_dashboard( array $summary, array $report, array $meta ): string {
-		$errors    = (int) ( $summary['errors'] ?? 0 );
-		$warnings  = (int) ( $summary['warnings'] ?? 0 );
-		$files     = (int) ( $summary['files_with_issues'] ?? 0 );
-		$score     = (int) ( $summary['score'] ?? 0 );
-		$files_map = isset( $report['files'] ) && is_array( $report['files'] ) ? $report['files'] : array();
+	private function render_overall_dashboard(int $score, array $summary): string {
+		$errors   = (int) ($summary['errors'] ?? 0);
+		$warnings = (int) ($summary['warnings'] ?? 0);
+		$files    = (int) ($summary['files_with_issues'] ?? 0);
 
 		ob_start();
 		?>
 		<style>
-			.wcqa-cards{display:flex;gap:12px;margin:16px 0;flex-wrap:wrap}
-			.wcqa-card{background:#fff;border:1px solid #ccd0d4;border-radius:12px;padding:14px 16px;min-width:180px}
-			.wcqa-card .label{font-size:12px;opacity:.75;margin-bottom:6px}
-			.wcqa-card .value{font-size:24px;font-weight:700}
-			.wcqa-meta{margin:10px 0 18px;opacity:.85}
-			.wcqa-file{background:#fff;border:1px solid #ccd0d4;border-radius:12px;margin:10px 0;padding:10px 12px}
-			.wcqa-issue{border-top:1px solid #eee;padding:8px 0;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace}
-			.wcqa-tag{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;border:1px solid #ccd0d4;margin-right:8px}
-			.wcqa-error{border-color:#d63638;color:#8a1f1f}
-			.wcqa-warning{border-color:#dba617;color:#7a5a00}
-			details summary{cursor:pointer}
-			.wcqa-muted{opacity:.75}
+			.wcqa-cards { display:flex; gap:12px; margin:16px 0; flex-wrap:wrap; }
+			.wcqa-card { background:#fff; border:1px solid #ccd0d4; border-radius:12px; padding:14px 16px; min-width:180px; }
+			.wcqa-card .label { font-size:12px; opacity:.75; margin-bottom:6px; }
+			.wcqa-card .value { font-size:24px; font-weight:700; }
 		</style>
 
-		<h2>Latest Scan Summary</h2>
+		<h2>Overall Website Code Quality (Repos Added)</h2>
 
 		<div class="wcqa-cards">
 			<div class="wcqa-card">
 				<div class="label">Quality Score</div>
-				<div class="value"><?php echo esc_html( (string) $score ); ?>/100</div>
+				<div class="value"><?php echo esc_html((string) $score); ?>/100</div>
 			</div>
 			<div class="wcqa-card">
 				<div class="label">Errors</div>
-				<div class="value"><?php echo esc_html( (string) $errors ); ?></div>
+				<div class="value"><?php echo esc_html((string) $errors); ?></div>
 			</div>
 			<div class="wcqa-card">
 				<div class="label">Warnings</div>
-				<div class="value"><?php echo esc_html( (string) $warnings ); ?></div>
+				<div class="value"><?php echo esc_html((string) $warnings); ?></div>
 			</div>
 			<div class="wcqa-card">
 				<div class="label">Files with issues</div>
-				<div class="value"><?php echo esc_html( (string) $files ); ?></div>
+				<div class="value"><?php echo esc_html((string) $files); ?></div>
 			</div>
 		</div>
-
-		<?php if ( ! empty( $meta['fetched_at'] ) || ! empty( $meta['source'] ) ) : ?>
-			<div class="wcqa-meta">
-				<?php if ( ! empty( $meta['fetched_at'] ) ) : ?>
-					<div><strong>Last updated:</strong> <?php echo esc_html( (string) $meta['fetched_at'] ); ?></div>
-				<?php endif; ?>
-				<?php if ( ! empty( $meta['source'] ) ) : ?>
-					<div class="wcqa-muted"><strong>Source:</strong> <?php echo esc_html( (string) $meta['source'] ); ?></div>
-				<?php endif; ?>
-			</div>
-		<?php endif; ?>
-
-		<h2>Issues by File</h2>
-
-		<?php
-		$any = false;
-
-		foreach ( $files_map as $file_path => $file_data ) {
-			if ( ! is_array( $file_data ) || empty( $file_data['messages'] ) || ! is_array( $file_data['messages'] ) ) {
-				continue;
-			}
-
-			$any = true;
-
-			$file_errors   = 0;
-			$file_warnings = 0;
-
-			foreach ( $file_data['messages'] as $m ) {
-				if ( ! is_array( $m ) ) {
-					continue;
-				}
-
-				$type = strtoupper( (string) ( $m['type'] ?? '' ) );
-
-				if ( 'ERROR' === $type ) {
-					$file_errors++;
-				}
-				if ( 'WARNING' === $type ) {
-					$file_warnings++;
-				}
-			}
-			?>
-			<div class="wcqa-file">
-				<details>
-					<summary>
-						<strong><?php echo esc_html( (string) $file_path ); ?></strong>
-						— <?php echo esc_html( 'Errors: ' . (string) $file_errors . ', Warnings: ' . (string) $file_warnings ); ?>
-					</summary>
-
-					<?php foreach ( $file_data['messages'] as $m ) : ?>
-						<?php
-						if ( ! is_array( $m ) ) {
-							continue;
-						}
-
-						$type  = strtoupper( (string) ( $m['type'] ?? '' ) );
-						$line  = (int) ( $m['line'] ?? 0 );
-						$col   = (int) ( $m['column'] ?? 0 );
-						$msg   = (string) ( $m['message'] ?? '' );
-						$sniff = (string) ( $m['source'] ?? '' );
-
-						$tag_class = ( 'ERROR' === $type ) ? 'wcqa-tag wcqa-error' : 'wcqa-tag wcqa-warning';
-						?>
-						<div class="wcqa-issue">
-							<span class="<?php echo esc_attr( $tag_class ); ?>"><?php echo esc_html( $type ); ?></span>
-							<strong>Line <?php echo esc_html( (string) $line ); ?></strong><?php echo ( $col > 0 ) ? esc_html( ' : ' . (string) $col ) : ''; ?>
-							— <?php echo esc_html( $msg ); ?>
-							<?php if ( ! empty( $sniff ) ) : ?>
-								<div class="wcqa-muted" style="margin-top:4px;">Sniff: <?php echo esc_html( $sniff ); ?></div>
-							<?php endif; ?>
-						</div>
-					<?php endforeach; ?>
-				</details>
-			</div>
-			<?php
-		}
-
-		if ( ! $any ) :
-			?>
-			<p>No issues found (or no report fetched yet). Click <strong>Fetch Latest Report</strong>.</p>
-		<?php endif; ?>
-
 		<?php
 		return (string) ob_get_clean();
 	}
 
-	/**
-	 * Render scan history table.
-	 *
-	 * @param array $history History.
-	 * @return string
-	 */
-	private function render_history( array $history ): string {
+	private function render_repo_cards(array $sources, array $latestBySource): string {
 		ob_start();
-		?>
-		<hr>
-		<h2>Scan History (Last <?php echo esc_html( (string) self::HISTORY_MAX ); ?>)</h2>
 
-		<?php if ( empty( $history ) ) : ?>
-			<p>No history yet. Click <strong>Fetch Latest Report</strong>.</p>
-		<?php else : ?>
-			<table class="widefat striped">
-				<thead>
-					<tr>
-						<th>Date</th>
-						<th>Score</th>
-						<th>Errors</th>
-						<th>Warnings</th>
-						<th>Files</th>
-					</tr>
-				</thead>
-				<tbody>
-					<?php foreach ( $history as $row ) : ?>
-						<tr>
-							<td><?php echo esc_html( (string) ( $row['fetched_at'] ?? '' ) ); ?></td>
-							<td><strong><?php echo esc_html( (string) ( (int) ( $row['score'] ?? 0 ) ) ); ?>/100</strong></td>
-							<td><?php echo esc_html( (string) ( (int) ( $row['errors'] ?? 0 ) ) ); ?></td>
-							<td><?php echo esc_html( (string) ( (int) ( $row['warnings'] ?? 0 ) ) ); ?></td>
-							<td><?php echo esc_html( (string) ( (int) ( $row['files'] ?? 0 ) ) ); ?></td>
-						</tr>
-					<?php endforeach; ?>
-				</tbody>
-			</table>
-		<?php endif; ?>
-		<?php
+		if (empty($sources)) {
+			echo '<p>No sources configured.</p>';
+			return (string) ob_get_clean();
+		}
+
+		echo '<div class="wcqa-cards">';
+
+		foreach ($sources as $s) {
+			if (!is_array($s) || empty($s['id'])) continue;
+
+			$sid  = (string) $s['id'];
+			$name = (string) ($s['name'] ?? $sid);
+
+			$latest = $latestBySource[$sid] ?? null;
+			$sum    = is_array($latest) && isset($latest['summary']) && is_array($latest['summary']) ? $latest['summary'] : array();
+
+			$score   = is_array($latest) ? (int) ($latest['score'] ?? 0) : 0;
+			$errors  = (int) ($sum['errors'] ?? 0);
+			$warns   = (int) ($sum['warnings'] ?? 0);
+			$fetched = is_array($latest) ? (string) ($latest['fetched_at'] ?? '') : '';
+
+			?>
+			<div class="wcqa-card" style="min-width:260px;">
+				<div class="label"><?php echo esc_html($name); ?></div>
+				<div class="value"><?php echo esc_html((string) $score); ?>/100</div>
+				<div class="label" style="margin-top:8px;">
+					Errors: <?php echo esc_html((string) $errors); ?> · Warnings: <?php echo esc_html((string) $warns); ?>
+				</div>
+				<?php if (!empty($fetched)) : ?>
+					<div class="label">Last fetched: <?php echo esc_html($fetched); ?></div>
+				<?php else : ?>
+					<div class="label">Not fetched yet</div>
+				<?php endif; ?>
+			</div>
+			<?php
+		}
+
+		echo '</div>';
+
+		return (string) ob_get_clean();
+	}
+
+	private function render_history(array $sources, array $history): string {
+		ob_start();
+
+		if (empty($sources)) {
+			echo '<p>No sources configured.</p>';
+			return (string) ob_get_clean();
+		}
+
+		foreach ($sources as $s) {
+			if (!is_array($s) || empty($s['id'])) continue;
+
+			$sid  = (string) $s['id'];
+			$name = (string) ($s['name'] ?? $sid);
+
+			$items = isset($history[$sid]) && is_array($history[$sid]) ? $history[$sid] : array();
+
+			echo '<h3>' . esc_html($name) . '</h3>';
+
+			if (empty($items)) {
+				echo '<p>No scans yet. Click fetch.</p>';
+				continue;
+			}
+
+			echo '<table class="widefat striped" style="margin:8px 0 20px;">';
+			echo '<thead><tr><th style="width:18%;">Fetched</th><th style="width:12%;">Score</th><th style="width:12%;">Errors</th><th style="width:12%;">Warnings</th><th>Source</th></tr></thead>';
+			echo '<tbody>';
+
+			foreach ($items as $row) {
+				if (!is_array($row)) continue;
+				$fetched = (string) ($row['fetched_at'] ?? '');
+				$score   = (int) ($row['score'] ?? 0);
+				$sum     = isset($row['summary']) && is_array($row['summary']) ? $row['summary'] : array();
+				$errors  = (int) ($sum['errors'] ?? 0);
+				$warns   = (int) ($sum['warnings'] ?? 0);
+				$src     = (string) ($row['source'] ?? '');
+
+				echo '<tr>';
+				echo '<td>' . esc_html($fetched) . '</td>';
+				echo '<td><strong>' . esc_html((string) $score) . '/100</strong></td>';
+				echo '<td>' . esc_html((string) $errors) . '</td>';
+				echo '<td>' . esc_html((string) $warns) . '</td>';
+				echo '<td>' . esc_html($src) . '</td>';
+				echo '</tr>';
+			}
+
+			echo '</tbody></table>';
+		}
+
 		return (string) ob_get_clean();
 	}
 }
