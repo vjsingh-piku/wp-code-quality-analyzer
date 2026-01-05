@@ -637,6 +637,14 @@ final class AdminPage
 				echo '<p>No scans yet. Click fetch.</p>';
 				continue;
 			}
+			
+			private function label_with_type(array $source): string {
+				$type      = isset($source['type']) ? (string) $source['type'] : 'plugin';
+				$typeLabel = self::TYPES[$type] ?? 'Plugin';
+				$name      = isset($source['name']) ? (string) $source['name'] : '';
+				return $typeLabel . ' — ' . $name;
+			}
+
 
 			echo '<table class="widefat striped" style="margin:8px 0 20px;">';
 			echo '<thead><tr><th style="width:18%;">Fetched</th><th style="width:12%;">Score</th><th style="width:12%;">Errors</th><th style="width:12%;">Warnings</th><th>Source</th></tr></thead>';
