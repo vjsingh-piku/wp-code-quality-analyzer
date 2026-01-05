@@ -442,16 +442,160 @@ final class AdminPage
 			<hr>
 
 			<h2>Latest Summary (Per Repo)</h2>
-			<?php echo $this->render_repo_cards($sources, $latestBySource); ?>
-
-			<hr>
-
+		<?php echo $this->render_repo_cards($sources, $latestBySource); ?>
+		<hr>
+			<h2>Latest Issues (Per Repo)</h2>
+			<p class="description">Expand a repo to see file-wise errors/warnings with line numbers.</p>
+		<?php echo $this->render_latest_issues($sources, $latestBySource); ?>
+		<hr>
 			<h2>Scan History (Last 10 per Repo)</h2>
-			<?php echo $this->render_history($sources, $history); ?>
+		<?php echo $this->render_history($sources, $history); ?>
 
 		</div>
 	<?php
 	}
+	private function render_latest_issues(array $sources, array $latestBySource): string {
+	ob_start();
+
+	if (empty($sources)) {
+		echo '<p>No sources configured.</p>';
+		return (string) ob_get_clean();
+	}
+
+	foreach ($sources as $s) {
+		if (!is_array($s) || empty($s['id'])) {
+			continue;
+		}
+
+		$sid  = (string) $s['id'];
+		$name = (string) ($s['name'] ?? $sid);
+		$type = (string) ($s['type'] ?? 'plugin');
+
+		$latest = $latestBySource[$sid] ?? null;
+		$report = (is_array($latest) && isset($latest['report']) && is_array($latest['report']))
+			? $latest['report']
+			: array();
+
+		$fetched = (is_array($latest) && !empty($latest['fetched_at'])) ? (string) $latest['fetched_at'] : '';
+
+		echo '<div style="background:#fff;border:1px solid #ccd0d4;border-radius:12px;padding:12px;margin:12px 0;">';
+		echo '<details>';
+		echo '<summary style="cursor:pointer;">';
+		echo '<strong>' . esc_html($type . ' — ' . $name) . '</strong>';
+		if (!empty($fetched)) {
+			echo ' <span style="opacity:.7;">(Last fetched: ' . esc_html($fetched) . ')</span>';
+		}
+		echo '</summary>';
+
+		echo $this->render_report_issues($report);
+
+		echo '</details>';
+		echo '</div>';
+	}
+
+	return (string) ob_get_clean();
+}
+
+private function render_report_issues(array $report): string {
+	$files = isset($report['files']) && is_array($report['files']) ? $report['files'] : array();
+
+	// If report is empty or invalid.
+	if (empty($files)) {
+		return '<p style="margin:10px 0;">No report data found for this repo. Click Fetch first, or confirm RAW JSON URL.</p>';
+	}
+
+	// Sort files with most issues first.
+	$fileStats = array();
+	foreach ($files as $filePath => $fileData) {
+		if (!is_array($fileData)) continue;
+		$messages = isset($fileData['messages']) && is_array($fileData['messages']) ? $fileData['messages'] : array();
+		$fileStats[$filePath] = count($messages);
+	}
+	arsort($fileStats);
+
+	// Safety: don't render thousands of issues at once.
+	$maxFiles    = 15;   // show top 15 files
+	$maxPerFile  = 50;   // show top 50 issues per file
+
+	ob_start();
+
+	echo '<div style="margin-top:12px;">';
+	echo '<p class="description">Showing top ' . esc_html((string) $maxFiles) . ' files by issue count (limit ' . esc_html((string) $maxPerFile) . ' issues per file).</p>';
+
+	$shownFiles = 0;
+
+	foreach ($fileStats as $filePath => $count) {
+		if ($shownFiles >= $maxFiles) {
+			break;
+		}
+		$fileData = $files[$filePath] ?? array();
+		$messages = isset($fileData['messages']) && is_array($fileData['messages']) ? $fileData['messages'] : array();
+		if (empty($messages)) continue;
+
+		$errors = 0;
+		$warns  = 0;
+		foreach ($messages as $m) {
+			if (!is_array($m)) continue;
+			$t = strtoupper((string) ($m['type'] ?? ''));
+			if ($t === 'ERROR') $errors++;
+			if ($t === 'WARNING') $warns++;
+		}
+
+		echo '<div style="border-top:1px solid #eee;padding-top:10px;margin-top:10px;">';
+		echo '<details>';
+		echo '<summary style="cursor:pointer;">';
+		echo '<strong>' . esc_html((string) $filePath) . '</strong>';
+		echo ' <span style="opacity:.75;">— Errors: ' . esc_html((string) $errors) . ', Warnings: ' . esc_html((string) $warns) . '</span>';
+		echo '</summary>';
+
+		echo '<div style="margin-top:10px;font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, \'Liberation Mono\', \'Courier New\', monospace;">';
+
+		$i = 0;
+		foreach ($messages as $m) {
+			if ($i >= $maxPerFile) break;
+			if (!is_array($m)) continue;
+
+			$type  = strtoupper((string) ($m['type'] ?? ''));
+			$line  = (int) ($m['line'] ?? 0);
+			$col   = (int) ($m['column'] ?? 0);
+			$msg   = (string) ($m['message'] ?? '');
+			$sniff = (string) ($m['source'] ?? '');
+
+			$badgeStyle = ($type === 'ERROR')
+				? 'display:inline-block;border:1px solid #d63638;color:#8a1f1f;border-radius:999px;padding:2px 8px;font-size:12px;margin-right:8px;'
+				: 'display:inline-block;border:1px solid #dba617;color:#7a5a00;border-radius:999px;padding:2px 8px;font-size:12px;margin-right:8px;';
+
+			echo '<div style="padding:8px 0;border-top:1px solid #f3f3f3;">';
+			echo '<span style="' . esc_attr($badgeStyle) . '">' . esc_html($type) . '</span>';
+			echo '<strong>Line ' . esc_html((string) $line) . '</strong>';
+			if ($col > 0) echo esc_html(':' . (string) $col);
+			echo ' — ' . esc_html($msg);
+
+			if (!empty($sniff)) {
+				echo '<div style="opacity:.75;margin-top:4px;">Rule: ' . esc_html($sniff) . '</div>';
+			}
+
+			echo '</div>';
+
+			$i++;
+		}
+
+		if (count($messages) > $maxPerFile) {
+			echo '<p style="opacity:.75;margin-top:8px;">Showing first ' . esc_html((string) $maxPerFile) . ' issues only.</p>';
+		}
+
+		echo '</div>'; // monospace
+		echo '</details>';
+		echo '</div>';
+
+		$shownFiles++;
+	}
+
+	echo '</div>';
+
+	return (string) ob_get_clean();
+}
+
 
 	/** Build summary from PHPCS JSON report. */
 	private function build_summary(array $report): array
