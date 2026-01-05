@@ -1,48 +1,50 @@
 <?php
-declare(strict_types=1);
-
 /**
- * Plugin Name: WP Code Quality Analyzer
- * Description: Analyze WordPress code quality using PHPCS reports from GitHub Actions.
- * Version: 1.0.0
- * Author: Vijay Singh (Soluzione)
- * Text Domain: wcqa
+ * Plugin Name:       WP Code Quality Analyzer
+ * Plugin URI:        https://github.com/vjsingh-piku/wp-code-quality-analyzer
+ * Description:       Shows PHPCS code-quality reports generated via GitHub Actions inside the WordPress admin.
+ * Version:           1.0.0
+ * Author:            Vijay Singh (Soluzione)
+ * Text Domain:       wcqa
+ * Requires at least: 6.0
+ * Requires PHP:      7.4
+ *
+ * @package WCQA
  */
 
-if (!defined('ABSPATH')) {
-  exit;
+declare(strict_types=1);
+
+if ( ! defined( 'ABSPATH' ) ) {
+	exit;
 }
 
 /**
- * Minimal PSR-4-ish autoloader for WCQA\* classes in /src
+ * Simple autoloader (no Composer on shared hosting).
+ *
+ * @param string $class Class name.
+ * @return void
  */
-spl_autoload_register(static function (string $class): void {
-  $prefix = 'WCQA\\';
+spl_autoload_register(
+	function ( string $class ): void {
+		if ( 0 !== strpos( $class, 'WCQA\\' ) ) {
+			return;
+		}
 
-  if (strpos($class, $prefix) !== 0) {
-    return;
-  }
+		$relative = str_replace( array( 'WCQA\\', '\\' ), array( '', '/' ), $class );
+		$path     = plugin_dir_path( __FILE__ ) . 'src/' . $relative . '.php';
 
-  $relative = substr($class, strlen($prefix));
-  $relative = str_replace('\\', '/', $relative);
+		if ( file_exists( $path ) ) {
+			require_once $path;
+		}
+	}
+);
 
-  $path = plugin_dir_path(__FILE__) . 'src/' . $relative . '.php';
-
-  if (is_readable($path)) {
-    require_once $path;
-  }
-});
-
-/**
- * Boot admin UI
- */
-add_action('plugins_loaded', static function (): void {
-  if (!is_admin()) {
-    return;
-  }
-
-  if (class_exists('\WCQA\AdminPage')) {
-    $admin = new \WCQA\AdminPage();
-    $admin->register();
-  }
-});
+add_action(
+	'plugins_loaded',
+	function (): void {
+		if ( is_admin() && class_exists( '\WCQA\AdminPage' ) ) {
+			$admin = new \WCQA\AdminPage();
+			$admin->register();
+		}
+	}
+);
