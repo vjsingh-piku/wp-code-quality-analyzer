@@ -3,7 +3,7 @@
  * Plugin Name: WP Code Quality Analyzer
  * Description: Monitor code quality of themes/plugins via PHPCS reports generated in GitHub Actions.
  * Version: 1.0.0
- * Author: Vijay Singh
+ * Author: Soluzione
  * Text Domain: wcqa
  */
 
