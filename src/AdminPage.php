@@ -449,7 +449,6 @@ final class AdminPage
 
 	</div>
 	<?php
-}
 	}
 	private function render_latest_issues(array $sources, array $latestBySource): string {
 	ob_start();
