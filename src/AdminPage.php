@@ -230,229 +230,226 @@ final class AdminPage
 		exit;
 	}
 
-	public function render(): void
-	{
-		if (!current_user_can(self::CAP)) {
-			return;
+	public function render(): void {
+	if (!current_user_can(self::CAP)) {
+		return;
+	}
+
+	$sources = get_option(self::OPT_SOURCES, array());
+	$sources = is_array($sources) ? $sources : array();
+
+	$history = get_option(self::OPT_HISTORY, array());
+	$history = is_array($history) ? $history : array();
+
+	// Build latestBySource + overall stats
+	$overall = array('errors' => 0, 'warnings' => 0, 'files_with_issues' => 0);
+	$overallScoreParts = array();
+	$latestBySource = array();
+
+	foreach ($sources as $s) {
+		if (!is_array($s) || empty($s['id'])) {
+			continue;
+		}
+		$sid = (string) $s['id'];
+
+		$latest = (isset($history[$sid][0]) && is_array($history[$sid][0])) ? $history[$sid][0] : null;
+		if (!$latest || !is_array($latest)) {
+			continue;
 		}
 
-		$sources = get_option(self::OPT_SOURCES, array());
-		$sources = is_array($sources) ? $sources : array();
+		$sum = (isset($latest['summary']) && is_array($latest['summary'])) ? $latest['summary'] : array();
 
-		$history = get_option(self::OPT_HISTORY, array());
-		$history = is_array($history) ? $history : array();
+		$overall['errors']            += (int) ($sum['errors'] ?? 0);
+		$overall['warnings']          += (int) ($sum['warnings'] ?? 0);
+		$overall['files_with_issues'] += (int) ($sum['files_with_issues'] ?? 0);
 
-		// Overall aggregation (latest entry per source)
-		$overall          = array(
-			'errors'            => 0,
-			'warnings'          => 0,
-			'files_with_issues' => 0,
-		);
-		$overallScoreParts = array();
-		$latestBySource    = array();
+		$overallScoreParts[] = (int) ($latest['score'] ?? 0);
+		$latestBySource[$sid] = $latest;
+	}
 
-		foreach ($sources as $s) {
-			if (!is_array($s) || empty($s['id'])) {
-				continue;
-			}
-			$sid = (string) $s['id'];
+	$overallScore = !empty($overallScoreParts)
+		? (int) round(array_sum($overallScoreParts) / count($overallScoreParts))
+		: 0;
 
-			$latest = isset($history[$sid][0]) && is_array($history[$sid][0]) ? $history[$sid][0] : null;
-			if (!$latest) {
-				continue;
-			}
+	?>
+	<div class="wrap">
+		<h1>WP Code Quality Analyzer</h1>
 
-			$sum = isset($latest['summary']) && is_array($latest['summary']) ? $latest['summary'] : array();
-			$overall['errors']            += (int) ($sum['errors'] ?? 0);
-			$overall['warnings']          += (int) ($sum['warnings'] ?? 0);
-			$overall['files_with_issues'] += (int) ($sum['files_with_issues'] ?? 0);
+		<?php echo $this->render_overall_dashboard($overallScore, $overall); ?>
 
-			$overallScoreParts[]      = (int) ($latest['score'] ?? 0);
-			$latestBySource[$sid] = $latest;
-		}
+		<hr>
 
-		$overallScore = !empty($overallScoreParts)
-			? (int) round(array_sum($overallScoreParts) / count($overallScoreParts))
-			: 0;
+		<h2>Repo Sources (Themes / Plugins)</h2>
+		<p class="description">
+			Add one entry per repo. Each repo should generate <code>reports/wcqa-report.json</code> via GitHub Actions.
+			<br><strong>Important:</strong> Use the <em>RAW JSON URL</em> (raw.githubusercontent.com), not the repo URL.
+		</p>
 
-?>
-		<div class="wrap">
-			<h1>WP Code Quality Analyzer</h1>
+		<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+			<input type="hidden" name="action" value="wcqa_save_sources">
+			<?php wp_nonce_field(self::NONCE_SAVE); ?>
 
-			<?php echo $this->render_overall_dashboard($overallScore, $overall); ?>
+			<table class="widefat striped" style="margin-top:12px;">
+				<thead>
+					<tr>
+						<th style="width:12%;">Type</th>
+						<th style="width:18%;">Name</th>
+						<th>RAW JSON URL</th>
+						<th style="width:18%;">Token (optional)</th>
+						<th style="width:12%;">Actions</th>
+					</tr>
+				</thead>
+				<tbody>
+					<?php
+					// Existing sources rows
+					foreach ($sources as $i => $row) :
+						if (!is_array($row)) {
+							continue;
+						}
 
-			<hr>
+						$id    = isset($row['id']) ? (string) $row['id'] : '';
+						$type  = isset($row['type']) ? sanitize_key((string) $row['type']) : 'plugin';
+						$name  = isset($row['name']) ? (string) $row['name'] : '';
+						$url   = isset($row['url']) ? (string) $row['url'] : '';
+						$token = isset($row['token']) ? (string) $row['token'] : '';
 
-			<h2>Repo Sources (Themes / Plugins)</h2>
-			<p class="description">
-				Add one entry per repo. Each repo should generate <code>reports/wcqa-report.json</code> via GitHub Actions.
-			</p>
-
-			<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
-				<input type="hidden" name="action" value="wcqa_save_sources">
-				<?php wp_nonce_field(self::NONCE_SAVE); ?>
-
-				<table class="widefat striped" style="margin-top:12px;">
-					<thead>
-						<tr>
-							<th style="width:12%;">Type</th>
-							<th style="width:18%;">Name</th>
-							<th>RAW JSON URL</th>
-							<th style="width:18%;">Token (optional)</th>
-							<th style="width:12%;">Actions</th>
-						</tr>
-					</thead>
-
-					<tbody>
-						<?php if (empty($sources)) : ?>
-							<tr>
-								<td colspan="5">No sources added yet.</td>
-							</tr>
-						<?php endif; ?>
-
-						<?php foreach ($sources as $i => $row) :
-							if (!is_array($row)) {
-								continue;
-							}
-
-							$id    = isset($row['id']) ? (string) $row['id'] : $this->new_id();
-							$type  = isset($row['type']) ? (string) $row['type'] : 'plugin';
-							$name  = isset($row['name']) ? (string) $row['name'] : '';
-							$url   = isset($row['url']) ? (string) $row['url'] : '';
-							$token = isset($row['token']) ? (string) $row['token'] : '';
-
-							if (!isset(self::TYPES[$type])) {
-								$type = 'plugin';
-							}
+						if (empty($id)) {
+							$id = $this->new_id();
+						}
+						if (!isset(self::TYPES[$type])) {
+							$type = 'plugin';
+						}
 						?>
-							<tr>
-								<td>
-									<select name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $i); ?>][type]">
-										<?php foreach (self::TYPES as $key => $label) : ?>
-											<option value="<?php echo esc_attr($key); ?>" <?php selected($type, $key); ?>>
-												<?php echo esc_html($label); ?>
-											</option>
-										<?php endforeach; ?>
-									</select>
-								</td>
-
-								<td>
-									<input type="hidden"
-										name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $i); ?>][id]"
-										value="<?php echo esc_attr($id); ?>">
-
-									<input type="text" class="regular-text"
-										name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $i); ?>][name]"
-										value="<?php echo esc_attr($name); ?>"
-										placeholder="e.g. Soluzione Theme">
-								</td>
-
-								<td>
-									<input type="url" class="large-text"
-										name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $i); ?>][url]"
-										value="<?php echo esc_attr($url); ?>"
-										placeholder="https://raw.githubusercontent.com/USER/REPO/main/reports/wcqa-report.json">
-								</td>
-
-								<td>
-									<input type="password" class="regular-text"
-										name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $i); ?>][token]"
-										value="<?php echo esc_attr($token); ?>"
-										placeholder="Only for private repos">
-								</td>
-
-								<td>
-									<span class="description">Save to apply</span>
-								</td>
-							</tr>
-						<?php endforeach; ?>
-
-						<?php $newIndex = count($sources); ?>
 						<tr>
 							<td>
-								<select name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $newIndex); ?>][type]">
+								<input type="hidden"
+									name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $i); ?>][id]"
+									value="<?php echo esc_attr($id); ?>">
+
+								<select name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $i); ?>][type]">
 									<?php foreach (self::TYPES as $key => $label) : ?>
-										<option value="<?php echo esc_attr($key); ?>"><?php echo esc_html($label); ?></option>
+										<option value="<?php echo esc_attr($key); ?>" <?php selected($type, $key); ?>>
+											<?php echo esc_html($label); ?>
+										</option>
 									<?php endforeach; ?>
 								</select>
 							</td>
 
 							<td>
-								<input type="hidden"
-									name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $newIndex); ?>][id]"
-									value="">
-
 								<input type="text" class="regular-text"
-									name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $newIndex); ?>][name]"
-									value=""
-									placeholder="Add new repo name">
+									name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $i); ?>][name]"
+									value="<?php echo esc_attr($name); ?>"
+									placeholder="e.g. Theme - MyTheme">
 							</td>
 
 							<td>
 								<input type="url" class="large-text"
-									name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $newIndex); ?>][url]"
-									value=""
-									placeholder="Add new RAW JSON URL">
+									name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $i); ?>][url]"
+									value="<?php echo esc_attr($url); ?>"
+									placeholder="https://raw.githubusercontent.com/USER/REPO/main/reports/wcqa-report.json">
 							</td>
 
 							<td>
 								<input type="password" class="regular-text"
-									name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $newIndex); ?>][token]"
-									value=""
-									placeholder="Optional token">
+									name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $i); ?>][token]"
+									value="<?php echo esc_attr($token); ?>"
+									placeholder="Only for private repos">
 							</td>
 
-							<td><span class="description">Add &amp; Save</span></td>
+							<td><span class="description">Save to apply</span></td>
 						</tr>
-					</tbody>
-				</table>
-
-				<?php submit_button('Save Sources'); ?>
-			</form>
-
-			<hr>
-
-			<h2>Fetch Latest Reports</h2>
-			<p class="description">Fetch each repo report (stores history).</p>
-
-			<?php if (empty($sources)) : ?>
-				<p>Add at least one repo source first.</p>
-			<?php else : ?>
-				<div style="display:flex; gap:12px; flex-wrap:wrap; margin-top:10px;">
-					<?php foreach ($sources as $s) :
-						if (!is_array($s) || empty($s['id'])) {
-							continue;
-						}
-
-						$sid   = (string) $s['id'];
-						$label = method_exists($this, 'label_with_type')
-							? $this->label_with_type($s)
-							: ((self::TYPES[(string) ($s['type'] ?? 'plugin')] ?? 'Plugin') . ' — ' . (string) ($s['name'] ?? $sid));
-					?>
-						<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin:0;">
-							<input type="hidden" name="action" value="wcqa_fetch_report">
-							<input type="hidden" name="source_id" value="<?php echo esc_attr($sid); ?>">
-							<?php wp_nonce_field(self::NONCE_FETCH); ?>
-							<?php submit_button('Fetch: ' . $label, 'secondary', 'submit', false); ?>
-						</form>
 					<?php endforeach; ?>
-				</div>
-			<?php endif; ?>
 
-			<hr>
+					<?php
+					// New blank row to add new source
+					$newIndex = count($sources);
+					?>
+					<tr>
+						<td>
+							<input type="hidden"
+								name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $newIndex); ?>][id]"
+								value="">
 
-			<h2>Latest Summary (Per Repo)</h2>
+							<select name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $newIndex); ?>][type]">
+								<?php foreach (self::TYPES as $key => $label) : ?>
+									<option value="<?php echo esc_attr($key); ?>">
+										<?php echo esc_html($label); ?>
+									</option>
+								<?php endforeach; ?>
+							</select>
+						</td>
+
+						<td>
+							<input type="text" class="regular-text"
+								name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $newIndex); ?>][name]"
+								value=""
+								placeholder="Add new repo name">
+						</td>
+
+						<td>
+							<input type="url" class="large-text"
+								name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $newIndex); ?>][url]"
+								value=""
+								placeholder="Add new RAW JSON URL">
+						</td>
+
+						<td>
+							<input type="password" class="regular-text"
+								name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $newIndex); ?>][token]"
+								value=""
+								placeholder="Optional token">
+						</td>
+
+						<td><span class="description">Add & Save</span></td>
+					</tr>
+				</tbody>
+			</table>
+
+			<?php submit_button('Save Sources'); ?>
+		</form>
+
+		<hr>
+
+		<h2>Fetch Latest Reports</h2>
+		<p class="description">Fetch each repo report (stores history).</p>
+
+		<?php if (empty($sources)) : ?>
+			<p>Add at least one repo source first.</p>
+		<?php else : ?>
+			<div style="display:flex; gap:12px; flex-wrap:wrap; margin-top:10px;">
+				<?php foreach ($sources as $s) :
+					if (!is_array($s) || empty($s['id'])) {
+						continue;
+					}
+					$sid  = (string) $s['id'];
+					$name = (string) ($s['name'] ?? $sid);
+					$type = (string) ($s['type'] ?? 'plugin');
+					$typeLabel = self::TYPES[$type] ?? 'Plugin';
+					?>
+					<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin:0;">
+						<input type="hidden" name="action" value="wcqa_fetch_report">
+						<input type="hidden" name="source_id" value="<?php echo esc_attr($sid); ?>">
+						<?php wp_nonce_field(self::NONCE_FETCH); ?>
+						<?php submit_button('Fetch: ' . $typeLabel . ' — ' . $name, 'secondary', 'submit', false); ?>
+					</form>
+				<?php endforeach; ?>
+			</div>
+		<?php endif; ?>
+
+		<hr>
+
+		<h2>Latest Summary (Per Repo)</h2>
+		<p class="description">Each card shows score + latest errors/warnings.</p>
 		<?php echo $this->render_repo_cards($sources, $latestBySource); ?>
+
 		<hr>
-			<h2>Latest Issues (Per Repo)</h2>
-			<p class="description">Expand a repo to see file-wise errors/warnings with line numbers.</p>
-		<?php echo $this->render_latest_issues($sources, $latestBySource); ?>
-		<hr>
-			<h2>Scan History (Last 10 per Repo)</h2>
+
+		<h2>Scan History (Last 10 per Repo)</h2>
 		<?php echo $this->render_history($sources, $history); ?>
 
-		</div>
+	</div>
 	<?php
+}
 	}
 	private function render_latest_issues(array $sources, array $latestBySource): string {
 	ob_start();
