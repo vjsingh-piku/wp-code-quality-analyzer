@@ -1,26 +1,25 @@
 <?php
-
 declare(strict_types=1);
 
 namespace WCQA;
 
-final class AdminPage
-{
+final class AdminPage {
 
-	public const CAP          = 'manage_options';
-	public const NONCE_SAVE   = 'wcqa_save_sources';
-	public const NONCE_FETCH  = 'wcqa_fetch_report';
-	public const OPT_SOURCES  = 'wcqa_sources';        // array of repo sources
-	public const OPT_HISTORY  = 'wcqa_report_history'; // array keyed by source id
+	public const CAP         = 'manage_options';
+	public const NONCE_SAVE  = 'wcqa_save_sources';
+	public const NONCE_FETCH = 'wcqa_fetch_report';
+
+	public const OPT_SOURCES = 'wcqa_sources';         // array of repo sources
+	public const OPT_HISTORY = 'wcqa_report_history';  // array keyed by source id
+
+	/** @var array<string,string> */
 	private const TYPES = array(
-		'theme'    => 'Theme',
-		'plugin'   => 'Plugin',
-		'mu'       => 'MU Plugin',
+		'theme'  => 'Theme',
+		'plugin' => 'Plugin',
+		'mu'     => 'MU Plugin',
 	);
 
-
-	public function register(): void
-	{
+	public function register(): void {
 		add_action('admin_menu', array($this, 'menu'));
 		add_action('admin_init', array($this, 'register_settings'));
 
@@ -28,8 +27,7 @@ final class AdminPage
 		add_action('admin_post_wcqa_fetch_report', array($this, 'handle_fetch_report'));
 	}
 
-	public function menu(): void
-	{
+	public function menu(): void {
 		add_menu_page(
 			'Code Quality Analyzer',
 			'Code Quality',
@@ -41,31 +39,30 @@ final class AdminPage
 		);
 	}
 
-	public function register_settings(): void
-	{
-		// Stored as array:
-		// [
-		//   ['id'=>'abc123','name'=>'Theme - MyTheme','url'=>'https://raw.../reports/wcqa-report.json','token'=>''],
-		//   ...
-		// ]
-		register_setting('wcqa_settings', self::OPT_SOURCES, array(
-			'type'              => 'array',
-			'sanitize_callback' => array($this, 'sanitize_sources'),
-			'default'           => array(),
-		));
+	public function register_settings(): void {
+		register_setting(
+			'wcqa_settings',
+			self::OPT_SOURCES,
+			array(
+				'type'              => 'array',
+				'sanitize_callback' => array($this, 'sanitize_sources'),
+				'default'           => array(),
+			)
+		);
 
-		// History stored as array keyed by source id:
-		// ['abc123' => [ ['fetched_at'=>'...','score'=>..,'summary'=>..,'report'=>..], ... ], ...]
-		register_setting('wcqa_settings', self::OPT_HISTORY, array(
-			'type'              => 'array',
-			'sanitize_callback' => array($this, 'sanitize_history'),
-			'default'           => array(),
-		));
+		register_setting(
+			'wcqa_settings',
+			self::OPT_HISTORY,
+			array(
+				'type'              => 'array',
+				'sanitize_callback' => array($this, 'sanitize_history'),
+				'default'           => array(),
+			)
+		);
 	}
 
 	/** Sanitize sources array. */
-	public function sanitize_sources($value): array
-	{
+	public function sanitize_sources($value): array {
 		$value = is_array($value) ? $value : array();
 		$out   = array();
 
@@ -75,11 +72,11 @@ final class AdminPage
 			}
 
 			$id    = isset($row['id']) ? sanitize_key((string) $row['id']) : '';
+			$type  = isset($row['type']) ? sanitize_key((string) $row['type']) : 'plugin';
 			$name  = isset($row['name']) ? sanitize_text_field((string) $row['name']) : '';
 			$url   = isset($row['url']) ? esc_url_raw((string) $row['url']) : '';
 			$token = isset($row['token']) ? $this->sanitize_token((string) $row['token']) : '';
 
-			$type  = isset($row['type']) ? sanitize_key((string) $row['type']) : 'plugin';
 			if (!isset(self::TYPES[$type])) {
 				$type = 'plugin';
 			}
@@ -104,37 +101,40 @@ final class AdminPage
 
 		return $out;
 	}
-	/** Sanitize history array. */
 
-	public function sanitize_history($value): array
-	{
-		// Keep as-is but ensure array.
+	/** Sanitize history array. */
+	public function sanitize_history($value): array {
 		return is_array($value) ? $value : array();
 	}
 
-	private function sanitize_token(string $value): string
-	{
+	private function sanitize_token(string $value): string {
 		$value = trim($value);
 		$value = (string) preg_replace('/^Bearer\s+/i', '', $value);
 		return $value;
 	}
 
-	private function new_id(): string
-	{
-		// short random-ish id
+	private function new_id(): string {
 		return substr(wp_hash((string) microtime(true) . wp_rand()), 0, 10);
 	}
 
+	private function type_label(string $type): string {
+		return self::TYPES[$type] ?? self::TYPES['plugin'];
+	}
+
+	private function label_with_type(array $source): string {
+		$type      = isset($source['type']) ? (string) $source['type'] : 'plugin';
+		$typeLabel = $this->type_label($type);
+		$name      = isset($source['name']) ? (string) $source['name'] : '';
+		return trim($typeLabel . ' — ' . $name);
+	}
+
 	/** Save sources from admin form. */
-	public function handle_save_sources(): void
-	{
+	public function handle_save_sources(): void {
 		if (!current_user_can(self::CAP)) {
 			wp_die('Not allowed.');
 		}
 		check_admin_referer(self::NONCE_SAVE);
 
-		// We save through options.php normally, but this handler allows
-		// "Add row" / delete behavior via POST.
 		$sources = isset($_POST[self::OPT_SOURCES]) ? (array) $_POST[self::OPT_SOURCES] : array();
 		update_option(self::OPT_SOURCES, $this->sanitize_sources($sources), false);
 
@@ -143,8 +143,7 @@ final class AdminPage
 	}
 
 	/** Fetch report for a specific source id and push into history. */
-	public function handle_fetch_report(): void
-	{
+	public function handle_fetch_report(): void {
 		if (!current_user_can(self::CAP)) {
 			wp_die('Not allowed.');
 		}
@@ -178,10 +177,13 @@ final class AdminPage
 			$headers['Authorization'] = 'Bearer ' . $token;
 		}
 
-		$res = wp_remote_get($url, array(
-			'timeout' => 25,
-			'headers' => $headers,
-		));
+		$res = wp_remote_get(
+			$url,
+			array(
+				'timeout' => 25,
+				'headers' => $headers,
+			)
+		);
 
 		if (is_wp_error($res)) {
 			wp_die('Fetch failed: ' . esc_html($res->get_error_message()));
@@ -193,8 +195,8 @@ final class AdminPage
 		if ($code !== 200) {
 			wp_die(
 				'Fetch failed. HTTP ' . esc_html((string) $code) .
-					'<br><br><strong>Tip:</strong> If your repo is private, add a GitHub token for this source.' .
-					'<br><br><strong>Response:</strong><br><pre>' . esc_html(substr($body, 0, 400)) . '</pre>'
+				'<br><br><strong>Tip:</strong> If your repo is private, add a GitHub token for this source.' .
+				'<br><br><strong>Response:</strong><br><pre>' . esc_html(substr($body, 0, 400)) . '</pre>'
 			);
 		}
 
@@ -213,15 +215,18 @@ final class AdminPage
 			$history[$source_id] = array();
 		}
 
-		array_unshift($history[$source_id], array(
-			'fetched_at' => current_time('mysql'),
-			'source'     => $url,
-			'score'      => $score,
-			'summary'    => $summary,
-			'report'     => $json,
-		));
+		array_unshift(
+			$history[$source_id],
+			array(
+				'fetched_at' => current_time('mysql'),
+				'source'     => $url,
+				'score'      => $score,
+				'summary'    => $summary,
+				'report'     => $json,
+			)
+		);
 
-		// Keep last 10 scans per source
+		// Keep last 10 scans per source.
 		$history[$source_id] = array_slice($history[$source_id], 0, 10);
 
 		update_option(self::OPT_HISTORY, $history, false);
@@ -231,371 +236,231 @@ final class AdminPage
 	}
 
 	public function render(): void {
-	if (!current_user_can(self::CAP)) {
-		return;
-	}
-
-	$sources = get_option(self::OPT_SOURCES, array());
-	$sources = is_array($sources) ? $sources : array();
-
-	$history = get_option(self::OPT_HISTORY, array());
-	$history = is_array($history) ? $history : array();
-
-	// Build latestBySource + overall stats
-	$overall = array('errors' => 0, 'warnings' => 0, 'files_with_issues' => 0);
-	$overallScoreParts = array();
-	$latestBySource = array();
-
-	foreach ($sources as $s) {
-		if (!is_array($s) || empty($s['id'])) {
-			continue;
-		}
-		$sid = (string) $s['id'];
-
-		$latest = (isset($history[$sid][0]) && is_array($history[$sid][0])) ? $history[$sid][0] : null;
-		if (!$latest || !is_array($latest)) {
-			continue;
+		if (!current_user_can(self::CAP)) {
+			return;
 		}
 
-		$sum = (isset($latest['summary']) && is_array($latest['summary'])) ? $latest['summary'] : array();
+		$sources = get_option(self::OPT_SOURCES, array());
+		$sources = is_array($sources) ? $sources : array();
 
-		$overall['errors']            += (int) ($sum['errors'] ?? 0);
-		$overall['warnings']          += (int) ($sum['warnings'] ?? 0);
-		$overall['files_with_issues'] += (int) ($sum['files_with_issues'] ?? 0);
+		$history = get_option(self::OPT_HISTORY, array());
+		$history = is_array($history) ? $history : array();
 
-		$overallScoreParts[] = (int) ($latest['score'] ?? 0);
-		$latestBySource[$sid] = $latest;
-	}
+		// Build latestBySource + overall stats.
+		$overall           = array('errors' => 0, 'warnings' => 0, 'files_with_issues' => 0);
+		$overallScoreParts = array();
+		$latestBySource    = array();
 
-	$overallScore = !empty($overallScoreParts)
-		? (int) round(array_sum($overallScoreParts) / count($overallScoreParts))
-		: 0;
+		foreach ($sources as $s) {
+			if (!is_array($s) || empty($s['id'])) {
+				continue;
+			}
 
-	?>
-	<div class="wrap">
-		<h1>WP Code Quality Analyzer</h1>
+			$sid    = (string) $s['id'];
+			$latest = (isset($history[$sid][0]) && is_array($history[$sid][0])) ? $history[$sid][0] : null;
 
-		<?php echo $this->render_overall_dashboard($overallScore, $overall); ?>
+			if (!$latest || !is_array($latest)) {
+				continue;
+			}
 
-		<hr>
+			$sum = (isset($latest['summary']) && is_array($latest['summary'])) ? $latest['summary'] : array();
 
-		<h2>Repo Sources (Themes / Plugins)</h2>
-		<p class="description">
-			Add one entry per repo. Each repo should generate <code>reports/wcqa-report.json</code> via GitHub Actions.
-			<br><strong>Important:</strong> Use the <em>RAW JSON URL</em> (raw.githubusercontent.com), not the repo URL.
-		</p>
+			$overall['errors']            += (int) ($sum['errors'] ?? 0);
+			$overall['warnings']          += (int) ($sum['warnings'] ?? 0);
+			$overall['files_with_issues'] += (int) ($sum['files_with_issues'] ?? 0);
 
-		<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
-			<input type="hidden" name="action" value="wcqa_save_sources">
-			<?php wp_nonce_field(self::NONCE_SAVE); ?>
+			$overallScoreParts[]  = (int) ($latest['score'] ?? 0);
+			$latestBySource[$sid] = $latest;
+		}
 
-			<table class="widefat striped" style="margin-top:12px;">
-				<thead>
-					<tr>
-						<th style="width:12%;">Type</th>
-						<th style="width:18%;">Name</th>
-						<th>RAW JSON URL</th>
-						<th style="width:18%;">Token (optional)</th>
-						<th style="width:12%;">Actions</th>
-					</tr>
-				</thead>
-				<tbody>
-					<?php
-					// Existing sources rows
-					foreach ($sources as $i => $row) :
-						if (!is_array($row)) {
-							continue;
-						}
+		$overallScore = !empty($overallScoreParts)
+			? (int) round(array_sum($overallScoreParts) / count($overallScoreParts))
+			: 0;
 
-						$id    = isset($row['id']) ? (string) $row['id'] : '';
-						$type  = isset($row['type']) ? sanitize_key((string) $row['type']) : 'plugin';
-						$name  = isset($row['name']) ? (string) $row['name'] : '';
-						$url   = isset($row['url']) ? (string) $row['url'] : '';
-						$token = isset($row['token']) ? (string) $row['token'] : '';
+		?>
+		<div class="wrap">
+			<h1>WP Code Quality Analyzer</h1>
 
-						if (empty($id)) {
-							$id = $this->new_id();
-						}
-						if (!isset(self::TYPES[$type])) {
-							$type = 'plugin';
-						}
-						?>
+			<?php echo $this->render_overall_dashboard($overallScore, $overall); ?>
+
+			<hr>
+
+			<h2>Repo Sources (Themes / Plugins)</h2>
+			<p class="description">
+				Add one entry per repo. Each repo should generate <code>reports/wcqa-report.json</code> via GitHub Actions.
+				<br><strong>Important:</strong> Use the <em>RAW JSON URL</em> (raw.githubusercontent.com), not the repo URL.
+			</p>
+
+			<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+				<input type="hidden" name="action" value="wcqa_save_sources">
+				<?php wp_nonce_field(self::NONCE_SAVE); ?>
+
+				<table class="widefat striped" style="margin-top:12px;">
+					<thead>
+						<tr>
+							<th style="width:12%;">Type</th>
+							<th style="width:18%;">Name</th>
+							<th>RAW JSON URL</th>
+							<th style="width:18%;">Token (optional)</th>
+							<th style="width:12%;">Actions</th>
+						</tr>
+					</thead>
+					<tbody>
+						<?php foreach ($sources as $i => $row) : ?>
+							<?php
+							if (!is_array($row)) {
+								continue;
+							}
+
+							$id    = isset($row['id']) ? (string) $row['id'] : '';
+							$type  = isset($row['type']) ? sanitize_key((string) $row['type']) : 'plugin';
+							$name  = isset($row['name']) ? (string) $row['name'] : '';
+							$url   = isset($row['url']) ? (string) $row['url'] : '';
+							$token = isset($row['token']) ? (string) $row['token'] : '';
+
+							if (empty($id)) {
+								$id = $this->new_id();
+							}
+							if (!isset(self::TYPES[$type])) {
+								$type = 'plugin';
+							}
+							?>
+							<tr>
+								<td>
+									<input type="hidden"
+										name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $i); ?>][id]"
+										value="<?php echo esc_attr($id); ?>">
+
+									<select name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $i); ?>][type]">
+										<?php foreach (self::TYPES as $key => $label) : ?>
+											<option value="<?php echo esc_attr($key); ?>" <?php selected($type, $key); ?>>
+												<?php echo esc_html($label); ?>
+											</option>
+										<?php endforeach; ?>
+									</select>
+								</td>
+
+								<td>
+									<input type="text" class="regular-text"
+										name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $i); ?>][name]"
+										value="<?php echo esc_attr($name); ?>"
+										placeholder="e.g. Plugin - MyPlugin">
+								</td>
+
+								<td>
+									<input type="url" class="large-text"
+										name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $i); ?>][url]"
+										value="<?php echo esc_attr($url); ?>"
+										placeholder="https://raw.githubusercontent.com/USER/REPO/main/reports/wcqa-report.json">
+								</td>
+
+								<td>
+									<input type="password" class="regular-text"
+										name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $i); ?>][token]"
+										value="<?php echo esc_attr($token); ?>"
+										placeholder="Only for private repos">
+								</td>
+
+								<td><span class="description">Save to apply</span></td>
+							</tr>
+						<?php endforeach; ?>
+
+						<?php $newIndex = count($sources); ?>
 						<tr>
 							<td>
 								<input type="hidden"
-									name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $i); ?>][id]"
-									value="<?php echo esc_attr($id); ?>">
+									name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $newIndex); ?>][id]"
+									value="">
 
-								<select name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $i); ?>][type]">
+								<select name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $newIndex); ?>][type]">
 									<?php foreach (self::TYPES as $key => $label) : ?>
-										<option value="<?php echo esc_attr($key); ?>" <?php selected($type, $key); ?>>
-											<?php echo esc_html($label); ?>
-										</option>
+										<option value="<?php echo esc_attr($key); ?>"><?php echo esc_html($label); ?></option>
 									<?php endforeach; ?>
 								</select>
 							</td>
 
 							<td>
 								<input type="text" class="regular-text"
-									name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $i); ?>][name]"
-									value="<?php echo esc_attr($name); ?>"
-									placeholder="e.g. Theme - MyTheme">
+									name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $newIndex); ?>][name]"
+									value=""
+									placeholder="Add new repo name">
 							</td>
 
 							<td>
 								<input type="url" class="large-text"
-									name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $i); ?>][url]"
-									value="<?php echo esc_attr($url); ?>"
-									placeholder="https://raw.githubusercontent.com/USER/REPO/main/reports/wcqa-report.json">
+									name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $newIndex); ?>][url]"
+									value=""
+									placeholder="Add new RAW JSON URL">
 							</td>
 
 							<td>
 								<input type="password" class="regular-text"
-									name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $i); ?>][token]"
-									value="<?php echo esc_attr($token); ?>"
-									placeholder="Only for private repos">
+									name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $newIndex); ?>][token]"
+									value=""
+									placeholder="Optional token">
 							</td>
 
-							<td><span class="description">Save to apply</span></td>
+							<td><span class="description">Add &amp; Save</span></td>
 						</tr>
+					</tbody>
+				</table>
+
+				<?php submit_button('Save Sources'); ?>
+			</form>
+
+			<hr>
+
+			<h2>Fetch Latest Reports</h2>
+			<p class="description">Fetch each repo report (stores history).</p>
+
+			<?php if (empty($sources)) : ?>
+				<p>Add at least one repo source first.</p>
+			<?php else : ?>
+				<div style="display:flex; gap:12px; flex-wrap:wrap; margin-top:10px;">
+					<?php foreach ($sources as $s) : ?>
+						<?php
+						if (!is_array($s) || empty($s['id'])) {
+							continue;
+						}
+
+						$sid  = (string) $s['id'];
+						$name = (string) ($s['name'] ?? $sid);
+						$type = (string) ($s['type'] ?? 'plugin');
+
+						$typeLabel = $this->type_label($type);
+						?>
+						<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin:0;">
+							<input type="hidden" name="action" value="wcqa_fetch_report">
+							<input type="hidden" name="source_id" value="<?php echo esc_attr($sid); ?>">
+							<?php wp_nonce_field(self::NONCE_FETCH); ?>
+							<?php submit_button('Fetch: ' . $typeLabel . ' — ' . $name, 'secondary', 'submit', false); ?>
+						</form>
 					<?php endforeach; ?>
+				</div>
+			<?php endif; ?>
 
-					<?php
-					// New blank row to add new source
-					$newIndex = count($sources);
-					?>
-					<tr>
-						<td>
-							<input type="hidden"
-								name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $newIndex); ?>][id]"
-								value="">
+			<hr>
 
-							<select name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $newIndex); ?>][type]">
-								<?php foreach (self::TYPES as $key => $label) : ?>
-									<option value="<?php echo esc_attr($key); ?>">
-										<?php echo esc_html($label); ?>
-									</option>
-								<?php endforeach; ?>
-							</select>
-						</td>
+			<h2>Latest Summary (Per Repo)</h2>
+			<p class="description">Each card shows score + latest errors/warnings.</p>
+			<?php echo $this->render_repo_cards($sources, $latestBySource); ?>
 
-						<td>
-							<input type="text" class="regular-text"
-								name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $newIndex); ?>][name]"
-								value=""
-								placeholder="Add new repo name">
-						</td>
+			<hr>
 
-						<td>
-							<input type="url" class="large-text"
-								name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $newIndex); ?>][url]"
-								value=""
-								placeholder="Add new RAW JSON URL">
-						</td>
+			<h2>Latest Issues (Click to Expand)</h2>
+			<p class="description">This shows actual errors/warnings from the latest fetched report.</p>
+			<?php echo $this->render_latest_issues($sources, $latestBySource); ?>
 
-						<td>
-							<input type="password" class="regular-text"
-								name="<?php echo esc_attr(self::OPT_SOURCES); ?>[<?php echo esc_attr((string) $newIndex); ?>][token]"
-								value=""
-								placeholder="Optional token">
-						</td>
+			<hr>
 
-						<td><span class="description">Add & Save</span></td>
-					</tr>
-				</tbody>
-			</table>
-
-			<?php submit_button('Save Sources'); ?>
-		</form>
-
-		<hr>
-
-		<h2>Fetch Latest Reports</h2>
-		<p class="description">Fetch each repo report (stores history).</p>
-
-		<?php if (empty($sources)) : ?>
-			<p>Add at least one repo source first.</p>
-		<?php else : ?>
-			<div style="display:flex; gap:12px; flex-wrap:wrap; margin-top:10px;">
-				<?php foreach ($sources as $s) :
-					if (!is_array($s) || empty($s['id'])) {
-						continue;
-					}
-					$sid  = (string) $s['id'];
-					$name = (string) ($s['name'] ?? $sid);
-					$type = (string) ($s['type'] ?? 'plugin');
-					$typeLabel = self::TYPES[$type] ?? 'Plugin';
-					?>
-					<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin:0;">
-						<input type="hidden" name="action" value="wcqa_fetch_report">
-						<input type="hidden" name="source_id" value="<?php echo esc_attr($sid); ?>">
-						<?php wp_nonce_field(self::NONCE_FETCH); ?>
-						<?php submit_button('Fetch: ' . $typeLabel . ' — ' . $name, 'secondary', 'submit', false); ?>
-					</form>
-				<?php endforeach; ?>
-			</div>
-		<?php endif; ?>
-
-		<hr>
-
-		<h2>Latest Summary (Per Repo)</h2>
-		<p class="description">Each card shows score + latest errors/warnings.</p>
-		<?php echo $this->render_repo_cards($sources, $latestBySource); ?>
-
-		<hr>
-
-		<h2>Scan History (Last 10 per Repo)</h2>
-		<?php echo $this->render_history($sources, $history); ?>
-
-	</div>
-	<?php
+			<h2>Scan History (Last 10 per Repo)</h2>
+			<?php echo $this->render_history($sources, $history); ?>
+		</div>
+		<?php
 	}
-	private function render_latest_issues(array $sources, array $latestBySource): string {
-	ob_start();
-
-	if (empty($sources)) {
-		echo '<p>No sources configured.</p>';
-		return (string) ob_get_clean();
-	}
-
-	foreach ($sources as $s) {
-		if (!is_array($s) || empty($s['id'])) {
-			continue;
-		}
-
-		$sid  = (string) $s['id'];
-		$name = (string) ($s['name'] ?? $sid);
-		$type = (string) ($s['type'] ?? 'plugin');
-
-		$latest = $latestBySource[$sid] ?? null;
-		$report = (is_array($latest) && isset($latest['report']) && is_array($latest['report']))
-			? $latest['report']
-			: array();
-
-		$fetched = (is_array($latest) && !empty($latest['fetched_at'])) ? (string) $latest['fetched_at'] : '';
-
-		echo '<div style="background:#fff;border:1px solid #ccd0d4;border-radius:12px;padding:12px;margin:12px 0;">';
-		echo '<details>';
-		echo '<summary style="cursor:pointer;">';
-		echo '<strong>' . esc_html($type . ' — ' . $name) . '</strong>';
-		if (!empty($fetched)) {
-			echo ' <span style="opacity:.7;">(Last fetched: ' . esc_html($fetched) . ')</span>';
-		}
-		echo '</summary>';
-
-		echo $this->render_report_issues($report);
-
-		echo '</details>';
-		echo '</div>';
-	}
-
-	return (string) ob_get_clean();
-}
-
-private function render_report_issues(array $report): string {
-	$files = isset($report['files']) && is_array($report['files']) ? $report['files'] : array();
-
-	// If report is empty or invalid.
-	if (empty($files)) {
-		return '<p style="margin:10px 0;">No report data found for this repo. Click Fetch first, or confirm RAW JSON URL.</p>';
-	}
-
-	// Sort files with most issues first.
-	$fileStats = array();
-	foreach ($files as $filePath => $fileData) {
-		if (!is_array($fileData)) continue;
-		$messages = isset($fileData['messages']) && is_array($fileData['messages']) ? $fileData['messages'] : array();
-		$fileStats[$filePath] = count($messages);
-	}
-	arsort($fileStats);
-
-	// Safety: don't render thousands of issues at once.
-	$maxFiles    = 15;   // show top 15 files
-	$maxPerFile  = 50;   // show top 50 issues per file
-
-	ob_start();
-
-	echo '<div style="margin-top:12px;">';
-	echo '<p class="description">Showing top ' . esc_html((string) $maxFiles) . ' files by issue count (limit ' . esc_html((string) $maxPerFile) . ' issues per file).</p>';
-
-	$shownFiles = 0;
-
-	foreach ($fileStats as $filePath => $count) {
-		if ($shownFiles >= $maxFiles) {
-			break;
-		}
-		$fileData = $files[$filePath] ?? array();
-		$messages = isset($fileData['messages']) && is_array($fileData['messages']) ? $fileData['messages'] : array();
-		if (empty($messages)) continue;
-
-		$errors = 0;
-		$warns  = 0;
-		foreach ($messages as $m) {
-			if (!is_array($m)) continue;
-			$t = strtoupper((string) ($m['type'] ?? ''));
-			if ($t === 'ERROR') $errors++;
-			if ($t === 'WARNING') $warns++;
-		}
-
-		echo '<div style="border-top:1px solid #eee;padding-top:10px;margin-top:10px;">';
-		echo '<details>';
-		echo '<summary style="cursor:pointer;">';
-		echo '<strong>' . esc_html((string) $filePath) . '</strong>';
-		echo ' <span style="opacity:.75;">— Errors: ' . esc_html((string) $errors) . ', Warnings: ' . esc_html((string) $warns) . '</span>';
-		echo '</summary>';
-
-		echo '<div style="margin-top:10px;font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, \'Liberation Mono\', \'Courier New\', monospace;">';
-
-		$i = 0;
-		foreach ($messages as $m) {
-			if ($i >= $maxPerFile) break;
-			if (!is_array($m)) continue;
-
-			$type  = strtoupper((string) ($m['type'] ?? ''));
-			$line  = (int) ($m['line'] ?? 0);
-			$col   = (int) ($m['column'] ?? 0);
-			$msg   = (string) ($m['message'] ?? '');
-			$sniff = (string) ($m['source'] ?? '');
-
-			$badgeStyle = ($type === 'ERROR')
-				? 'display:inline-block;border:1px solid #d63638;color:#8a1f1f;border-radius:999px;padding:2px 8px;font-size:12px;margin-right:8px;'
-				: 'display:inline-block;border:1px solid #dba617;color:#7a5a00;border-radius:999px;padding:2px 8px;font-size:12px;margin-right:8px;';
-
-			echo '<div style="padding:8px 0;border-top:1px solid #f3f3f3;">';
-			echo '<span style="' . esc_attr($badgeStyle) . '">' . esc_html($type) . '</span>';
-			echo '<strong>Line ' . esc_html((string) $line) . '</strong>';
-			if ($col > 0) echo esc_html(':' . (string) $col);
-			echo ' — ' . esc_html($msg);
-
-			if (!empty($sniff)) {
-				echo '<div style="opacity:.75;margin-top:4px;">Rule: ' . esc_html($sniff) . '</div>';
-			}
-
-			echo '</div>';
-
-			$i++;
-		}
-
-		if (count($messages) > $maxPerFile) {
-			echo '<p style="opacity:.75;margin-top:8px;">Showing first ' . esc_html((string) $maxPerFile) . ' issues only.</p>';
-		}
-
-		echo '</div>'; // monospace
-		echo '</details>';
-		echo '</div>';
-
-		$shownFiles++;
-	}
-
-	echo '</div>';
-
-	return (string) ob_get_clean();
-}
-
 
 	/** Build summary from PHPCS JSON report. */
-	private function build_summary(array $report): array
-	{
+	private function build_summary(array $report): array {
 		$totalErrors     = 0;
 		$totalWarnings   = 0;
 		$filesWithIssues = 0;
@@ -603,15 +468,21 @@ private function render_report_issues(array $report): string {
 		$files = isset($report['files']) && is_array($report['files']) ? $report['files'] : array();
 
 		foreach ($files as $fileData) {
-			if (!is_array($fileData)) continue;
+			if (!is_array($fileData)) {
+				continue;
+			}
 
 			$messages = isset($fileData['messages']) && is_array($fileData['messages']) ? $fileData['messages'] : array();
-			if (empty($messages)) continue;
+			if (empty($messages)) {
+				continue;
+			}
 
 			$filesWithIssues++;
 
 			foreach ($messages as $m) {
-				if (!is_array($m)) continue;
+				if (!is_array($m)) {
+					continue;
+				}
 				$type = strtoupper((string) ($m['type'] ?? ''));
 				if ($type === 'ERROR') {
 					$totalErrors++;
@@ -622,66 +493,45 @@ private function render_report_issues(array $report): string {
 		}
 
 		return array(
-			'errors'           => $totalErrors,
-			'warnings'         => $totalWarnings,
+			'errors'            => $totalErrors,
+			'warnings'          => $totalWarnings,
 			'files_with_issues' => $filesWithIssues,
 		);
 	}
 
 	/**
 	 * Quality Score heuristic (0-100).
-	 * You can tune weights later. This is simple & stable.
+	 * Tune weights later if needed.
 	 */
-	private function compute_quality_score(array $summary): int
-	{
+	private function compute_quality_score(array $summary): int {
 		$errors   = (int) ($summary['errors'] ?? 0);
 		$warnings = (int) ($summary['warnings'] ?? 0);
 
-		// Weighted penalty.
 		$penalty = ($errors * 4) + ($warnings * 1);
 
-		// Map penalty to score. Clamp to 0..100.
 		$score = 100 - (int) min(100, round($penalty / 5));
-		if ($score < 0) $score = 0;
-		if ($score > 100) $score = 100;
+		if ($score < 0) {
+			$score = 0;
+		}
+		if ($score > 100) {
+			$score = 100;
+		}
 
 		return $score;
 	}
 
-	private function render_overall_dashboard(int $score, array $summary): string
-	{
+	private function render_overall_dashboard(int $score, array $summary): string {
 		$errors   = (int) ($summary['errors'] ?? 0);
 		$warnings = (int) ($summary['warnings'] ?? 0);
 		$files    = (int) ($summary['files_with_issues'] ?? 0);
 
 		ob_start();
-	?>
+		?>
 		<style>
-			.wcqa-cards {
-				display: flex;
-				gap: 12px;
-				margin: 16px 0;
-				flex-wrap: wrap;
-			}
-
-			.wcqa-card {
-				background: #fff;
-				border: 1px solid #ccd0d4;
-				border-radius: 12px;
-				padding: 14px 16px;
-				min-width: 180px;
-			}
-
-			.wcqa-card .label {
-				font-size: 12px;
-				opacity: .75;
-				margin-bottom: 6px;
-			}
-
-			.wcqa-card .value {
-				font-size: 24px;
-				font-weight: 700;
-			}
+			.wcqa-cards { display:flex; gap:12px; margin:16px 0; flex-wrap:wrap; }
+			.wcqa-card { background:#fff; border:1px solid #ccd0d4; border-radius:12px; padding:14px 16px; min-width:180px; }
+			.wcqa-card .label { font-size:12px; opacity:.75; margin-bottom:6px; }
+			.wcqa-card .value { font-size:24px; font-weight:700; }
 		</style>
 
 		<h2>Overall Website Code Quality (Repos Added)</h2>
@@ -708,8 +558,7 @@ private function render_report_issues(array $report): string {
 		return (string) ob_get_clean();
 	}
 
-	private function render_repo_cards(array $sources, array $latestBySource): string
-	{
+	private function render_repo_cards(array $sources, array $latestBySource): string {
 		ob_start();
 
 		if (empty($sources)) {
@@ -720,23 +569,28 @@ private function render_report_issues(array $report): string {
 		echo '<div class="wcqa-cards">';
 
 		foreach ($sources as $s) {
-			if (!is_array($s) || empty($s['id'])) continue;
+			if (!is_array($s) || empty($s['id'])) {
+				continue;
+			}
 
 			$sid  = (string) $s['id'];
 			$name = (string) ($s['name'] ?? $sid);
+			$type = (string) ($s['type'] ?? 'plugin');
 
-			$latest = $latestBySource[$sid] ?? null;
-			$sum    = is_array($latest) && isset($latest['summary']) && is_array($latest['summary']) ? $latest['summary'] : array();
+			$typeLabel = $this->type_label($type);
 
+			$latest  = $latestBySource[$sid] ?? null;
+			$sum     = (is_array($latest) && isset($latest['summary']) && is_array($latest['summary'])) ? $latest['summary'] : array();
 			$score   = is_array($latest) ? (int) ($latest['score'] ?? 0) : 0;
 			$errors  = (int) ($sum['errors'] ?? 0);
 			$warns   = (int) ($sum['warnings'] ?? 0);
 			$fetched = is_array($latest) ? (string) ($latest['fetched_at'] ?? '') : '';
 
-		?>
+			?>
 			<div class="wcqa-card" style="min-width:260px;">
-				<div class="label"><?php echo esc_html($name); ?></div>
+				<div class="label"><?php echo esc_html($typeLabel); ?></div>
 				<div class="value"><?php echo esc_html((string) $score); ?>/100</div>
+				<div class="label" style="margin-top:6px;"><?php echo esc_html($name); ?></div>
 				<div class="label" style="margin-top:8px;">
 					Errors: <?php echo esc_html((string) $errors); ?> · Warnings: <?php echo esc_html((string) $warns); ?>
 				</div>
@@ -746,7 +600,7 @@ private function render_report_issues(array $report): string {
 					<div class="label">Not fetched yet</div>
 				<?php endif; ?>
 			</div>
-<?php
+			<?php
 		}
 
 		echo '</div>';
@@ -754,8 +608,7 @@ private function render_report_issues(array $report): string {
 		return (string) ob_get_clean();
 	}
 
-	private function render_history(array $sources, array $history): string
-	{
+	private function render_history(array $sources, array $history): string {
 		ob_start();
 
 		if (empty($sources)) {
@@ -764,37 +617,33 @@ private function render_report_issues(array $report): string {
 		}
 
 		foreach ($sources as $s) {
-			if (!is_array($s) || empty($s['id'])) continue;
+			if (!is_array($s) || empty($s['id'])) {
+				continue;
+			}
 
-			$sid  = (string) $s['id'];
-			$name = (string) ($s['name'] ?? $sid);
+			$sid   = (string) $s['id'];
+			$items = (isset($history[$sid]) && is_array($history[$sid])) ? $history[$sid] : array();
 
-			$items = isset($history[$sid]) && is_array($history[$sid]) ? $history[$sid] : array();
-
-			echo '<h3>' . esc_html($name) . '</h3>';
+			// ✅ Type label in heading.
+			echo '<h3>' . esc_html($this->label_with_type($s)) . '</h3>';
 
 			if (empty($items)) {
 				echo '<p>No scans yet. Click fetch.</p>';
 				continue;
 			}
-			
-			private function label_with_type(array $source): string {
-				$type      = isset($source['type']) ? (string) $source['type'] : 'plugin';
-				$typeLabel = self::TYPES[$type] ?? 'Plugin';
-				$name      = isset($source['name']) ? (string) $source['name'] : '';
-				return $typeLabel . ' — ' . $name;
-			}
-
 
 			echo '<table class="widefat striped" style="margin:8px 0 20px;">';
 			echo '<thead><tr><th style="width:18%;">Fetched</th><th style="width:12%;">Score</th><th style="width:12%;">Errors</th><th style="width:12%;">Warnings</th><th>Source</th></tr></thead>';
 			echo '<tbody>';
 
 			foreach ($items as $row) {
-				if (!is_array($row)) continue;
+				if (!is_array($row)) {
+					continue;
+				}
+
 				$fetched = (string) ($row['fetched_at'] ?? '');
 				$score   = (int) ($row['score'] ?? 0);
-				$sum     = isset($row['summary']) && is_array($row['summary']) ? $row['summary'] : array();
+				$sum     = (isset($row['summary']) && is_array($row['summary'])) ? $row['summary'] : array();
 				$errors  = (int) ($sum['errors'] ?? 0);
 				$warns   = (int) ($sum['warnings'] ?? 0);
 				$src     = (string) ($row['source'] ?? '');
@@ -810,6 +659,162 @@ private function render_report_issues(array $report): string {
 
 			echo '</tbody></table>';
 		}
+
+		return (string) ob_get_clean();
+	}
+
+	private function render_latest_issues(array $sources, array $latestBySource): string {
+		ob_start();
+
+		if (empty($sources)) {
+			echo '<p>No sources configured.</p>';
+			return (string) ob_get_clean();
+		}
+
+		foreach ($sources as $s) {
+			if (!is_array($s) || empty($s['id'])) {
+				continue;
+			}
+
+			$sid    = (string) $s['id'];
+			$latest = $latestBySource[$sid] ?? null;
+
+			$report = (is_array($latest) && isset($latest['report']) && is_array($latest['report']))
+				? $latest['report']
+				: array();
+
+			$fetched = (is_array($latest) && !empty($latest['fetched_at'])) ? (string) $latest['fetched_at'] : '';
+
+			echo '<div style="background:#fff;border:1px solid #ccd0d4;border-radius:12px;padding:12px;margin:12px 0;">';
+			echo '<details>';
+			echo '<summary style="cursor:pointer;">';
+			echo '<strong>' . esc_html($this->label_with_type($s)) . '</strong>';
+			if (!empty($fetched)) {
+				echo ' <span style="opacity:.7;">(Last fetched: ' . esc_html($fetched) . ')</span>';
+			}
+			echo '</summary>';
+
+			echo $this->render_report_issues($report);
+
+			echo '</details>';
+			echo '</div>';
+		}
+
+		return (string) ob_get_clean();
+	}
+
+	private function render_report_issues(array $report): string {
+		$files = (isset($report['files']) && is_array($report['files'])) ? $report['files'] : array();
+
+		if (empty($files)) {
+			return '<p style="margin:10px 0;">No report data found for this repo. Click Fetch first, or confirm RAW JSON URL.</p>';
+		}
+
+		// Sort files with most issues first.
+		$fileStats = array();
+		foreach ($files as $filePath => $fileData) {
+			if (!is_array($fileData)) {
+				continue;
+			}
+			$messages            = (isset($fileData['messages']) && is_array($fileData['messages'])) ? $fileData['messages'] : array();
+			$fileStats[$filePath] = count($messages);
+		}
+		arsort($fileStats);
+
+		$maxFiles   = 15;
+		$maxPerFile = 50;
+
+		ob_start();
+
+		echo '<div style="margin-top:12px;">';
+		echo '<p class="description">Showing top ' . esc_html((string) $maxFiles) . ' files by issue count (limit ' . esc_html((string) $maxPerFile) . ' issues per file).</p>';
+
+		$shownFiles = 0;
+
+		foreach ($fileStats as $filePath => $count) {
+			if ($shownFiles >= $maxFiles) {
+				break;
+			}
+
+			$fileData = $files[$filePath] ?? array();
+			$messages = (isset($fileData['messages']) && is_array($fileData['messages'])) ? $fileData['messages'] : array();
+
+			if (empty($messages)) {
+				continue;
+			}
+
+			$errors = 0;
+			$warns  = 0;
+			foreach ($messages as $m) {
+				if (!is_array($m)) {
+					continue;
+				}
+				$t = strtoupper((string) ($m['type'] ?? ''));
+				if ($t === 'ERROR') {
+					$errors++;
+				}
+				if ($t === 'WARNING') {
+					$warns++;
+				}
+			}
+
+			echo '<div style="border-top:1px solid #eee;padding-top:10px;margin-top:10px;">';
+			echo '<details>';
+			echo '<summary style="cursor:pointer;">';
+			echo '<strong>' . esc_html((string) $filePath) . '</strong>';
+			echo ' <span style="opacity:.75;">— Errors: ' . esc_html((string) $errors) . ', Warnings: ' . esc_html((string) $warns) . '</span>';
+			echo '</summary>';
+
+			echo '<div style="margin-top:10px;font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, \'Liberation Mono\', \'Courier New\', monospace;">';
+
+			$i = 0;
+			foreach ($messages as $m) {
+				if ($i >= $maxPerFile) {
+					break;
+				}
+				if (!is_array($m)) {
+					continue;
+				}
+
+				$type  = strtoupper((string) ($m['type'] ?? ''));
+				$line  = (int) ($m['line'] ?? 0);
+				$col   = (int) ($m['column'] ?? 0);
+				$msg   = (string) ($m['message'] ?? '');
+				$sniff = (string) ($m['source'] ?? '');
+
+				$badgeStyle = ($type === 'ERROR')
+					? 'display:inline-block;border:1px solid #d63638;color:#8a1f1f;border-radius:999px;padding:2px 8px;font-size:12px;margin-right:8px;'
+					: 'display:inline-block;border:1px solid #dba617;color:#7a5a00;border-radius:999px;padding:2px 8px;font-size:12px;margin-right:8px;';
+
+				echo '<div style="padding:8px 0;border-top:1px solid #f3f3f3;">';
+				echo '<span style="' . esc_attr($badgeStyle) . '">' . esc_html($type) . '</span>';
+				echo '<strong>Line ' . esc_html((string) $line) . '</strong>';
+				if ($col > 0) {
+					echo esc_html(':' . (string) $col);
+				}
+				echo ' — ' . esc_html($msg);
+
+				if (!empty($sniff)) {
+					echo '<div style="opacity:.75;margin-top:4px;">Rule: ' . esc_html($sniff) . '</div>';
+				}
+
+				echo '</div>';
+
+				$i++;
+			}
+
+			if (count($messages) > $maxPerFile) {
+				echo '<p style="opacity:.75;margin-top:8px;">Showing first ' . esc_html((string) $maxPerFile) . ' issues only.</p>';
+			}
+
+			echo '</div>';
+			echo '</details>';
+			echo '</div>';
+
+			$shownFiles++;
+		}
+
+		echo '</div>';
 
 		return (string) ob_get_clean();
 	}
